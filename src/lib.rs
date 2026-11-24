@@ -581,12 +581,7 @@ impl DeviceClient for WebOsTv {
         self.cec_selections.clear();
         if let Ok(eim) = self.request(CEC_EIM_STATUS, json!({})) {
             if let Some(eim_rows) = eim["devices"].as_array() {
-                cec::append_children(
-                    rows,
-                    eim_rows,
-                    &mut inputs,
-                    &mut self.cec_selections,
-                );
+                cec::append_children(rows, eim_rows, &mut inputs, &mut self.cec_selections);
             }
         }
         Ok(inputs)
