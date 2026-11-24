@@ -278,7 +278,7 @@ mod tests {
         ];
         let mut inputs = vec![Selectable::new("HDMI_1", "HDMI 1")];
         let mut map = HashMap::new();
-        append_children(&external,&eim,&mut inputs,&mut map);
+        append_children(&external, &eim, &mut inputs, &mut map);
         assert_eq!(inputs.len(), 3);
     }
 
