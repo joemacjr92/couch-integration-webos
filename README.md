@@ -101,6 +101,8 @@ Actions secrets as `APK_PRIVATE_KEY` and `APK_PUBLIC_KEY`; the private key
 must never be committed. The packaging workflow checks that the private key,
 public-key secret and committed public key all match before signing anything.
 
+The committed public-key SHA-256 fingerprint is `499b0a9cfa8de88136f1f608221543eadfb43bea86af2782ed940013a11b332b`.
+
 ### Building and publishing
 
 Use **Actions → Build webOS integration package → Run workflow** and provide a
