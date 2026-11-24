@@ -72,8 +72,10 @@ jobs:
           if [[ -n "$REMOTE_REF" ]]; then
             git -C "$SOURCE" fetch --no-tags origin refs/heads/gh-pages
             git -C "$SOURCE" archive FETCH_HEAD | tar -x -C "$FEED"
+            echo "PAGES_BRANCH_EXISTS=true" >> "$GITHUB_ENV"
             echo "Existing Pages feed found."
           else
+            echo "PAGES_BRANCH_EXISTS=false" >> "$GITHUB_ENV"
             echo "No gh-pages branch exists; this is an initial feed build."
           fi
 
@@ -178,6 +180,13 @@ jobs:
             if [[ "$DRY_RUN" == "true" ]]; then ARGS+=(--allow-existing-version); fi
             bash "$GITHUB_WORKSPACE/couch-integration-webos/tools/validate-feed-history.sh" "${ARGS[@]}"
           else
+            if [[ "$PAGES_BRANCH_EXISTS" == "true" ]]; then
+              UNEXPECTED="$(find "$GITHUB_WORKSPACE/existing-feed" -mindepth 1 -maxdepth 1 ! -name .nojekyll ! -name preview -print -quit)"
+              if [[ -n "$UNEXPECTED" ]]; then
+                echo "Existing gh-pages branch contains unmanaged content ($UNEXPECTED); refusing to overwrite it." >&2
+                exit 1
+              fi
+            fi
             if [[ -n "$(find "$FEED_ARCH" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null || true)" ]]; then
               echo "Feed directory exists but has no valid feed.json; refusing bootstrap." >&2
               exit 1
