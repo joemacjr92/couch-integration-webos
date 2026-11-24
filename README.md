@@ -34,6 +34,33 @@ owner to approve Couch on the TV. The client key and exact TLS certificate are
 returned as a protocol-3 credential; they never enter settings, argv, the
 environment or exported Couch configuration.
 
+## HDMI-CEC inputs
+
+The input selector keeps the physical inputs reported by
+`ssap://tv/getExternalInputList` and augments them with downstream devices
+reported by `ssap://com.webos.service.eim/getAllInputStatus`. EIM's
+`inputId` associates a topology record with its physical input, while its
+`id` identifies the parent HDMI launch-point app.
+
+CEC descendants are flattened into the existing Couch input selector and
+labelled with their parent context (for example, `p3i · HDMI 2`). The
+top-level input list is retained unchanged. A depth-one CEC entry whose
+TV-reported name already appears in the top-level input list is not added a
+second time; this comparison is based on the current TV probe, not a
+hardcoded device or brand name. Where CEC vendor ID and physical address are
+available, those are also used to collapse duplicate CEC reports.
+
+Selecting a physical input continues to call `ssap://tv/switchInput`.
+Selecting a CEC descendant verifies that its `uniqueId` is still present,
+launches the parent HDMI app through
+`ssap://com.webos.applicationManager/launch` with the original
+`uniqueId` parameter, waits 2.5 seconds, and verifies EIM's
+`lastUniqueId`. A failed or stale selection is not blindly retried.
+
+CEC discovery is best-effort: if EIM status cannot be read, the physical
+input list remains available. The selector is refreshed when Couch requests
+its inputs; this package does not add background polling.
+
 ## Build and test
 
 ```sh
