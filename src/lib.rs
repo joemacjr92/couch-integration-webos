@@ -360,27 +360,6 @@ impl WebOsTv {
         }
     }
 
-    /// Consume already-arrived subscription notifications before a toggle.
-    /// The synchronous Couch client has no independent WebSocket receive task,
-    /// so this short drain makes remote-control changes visible even when no
-    /// other Couch command has run since the TV emitted the notification.
-    fn drain_mute_updates(&mut self) -> Result<()> {
-        let Some(subscription_id) = self.mute_subscription_id.clone() else {
-            return Ok(());
-        };
-        let until = Instant::now() + Duration::from_millis(25);
-        loop {
-            let message = match read(&mut self.socket, until) {
-                Ok(message) => message,
-                Err(Error::Timeout) => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            if message["id"] == subscription_id {
-                self.update_mute_subscription(&message);
-            }
-        }
-    }
-
     fn simple(&mut self, uri: &str) -> Result<()> {
         self.request(uri, json!({})).map(|_| ())
     }
