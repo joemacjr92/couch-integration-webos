@@ -134,7 +134,7 @@ The first integration-only implementation is now present in `src/lib.rs`.
 - Successful subscription IDs are retained for the lifetime of the `WebOsTv` instance. During an ordinary request read, frames for those IDs are dispatched to the corresponding audio-state parser; the pending command continues waiting for its own ID.
 - Volume notifications accept both the nested `volumeStatus` envelope and the legacy top-level shape. Audio status uses the `mute` field. Only valid values update the cache, so malformed updates do not erase prior state.
 - The ordinary `getVolume` request remains in place. The cached values are fallback state only when a response omits a field; they are not represented as continuously fresh.
-- Subscription setup errors are deliberately non-fatal to connection establishment and ordinary commands.
+- Rejected, malformed, or timed-out subscriptions are optional and do not prevent ordinary operation. A transport failure during setup is fatal, because the client cannot safely be returned with a broken socket.
 
 Unit tests now cover nested and legacy volume payloads, explicit false mute values, malformed-value preservation, subscription-ID routing, unknown IDs, and acknowledgement success/rejection parsing.
 
