@@ -13,7 +13,7 @@ pub(crate) const INPUT_PREFIX: &str = "cec/";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CecSelection {
-    pub(crate) parent_id: String,
+    pub(crate) parent_input_id: String,
     pub(crate) parent_app_id: String,
     pub(crate) unique_id: String,
 }
@@ -30,7 +30,7 @@ fn scalar(value: &Value) -> Option<String> {
     }
 }
 
-fn identity(row: &Value) -> Option<(String, String)> {
+fn identity_of(row: &Value) -> Option<(String, String)> {
     let vendor = scalar(row.get("vendorId")?)?;
     let address = scalar(row.get("physicalAddress")?)?;
     if address == "0" || address == "0x0" || address == "0x0000" {
@@ -83,16 +83,12 @@ fn valid_name(name: &str) -> bool {
 /// by display name or uniqueId (which can differ between duplicate reports).
 pub(crate) fn append_children(
     external_rows: &[Value],
-    eim_rows: Option<&[Value]>,
+    eim_rows: &[Value],
     inputs: &mut Vec<Selectable>,
     selections: &mut HashMap<String, CecSelection>,
 ) {
-    let Some(eim_rows) = eim_rows else {
-        return;
-    };
-
     for eim_parent in eim_rows {
-        let Some(parent_id) = eim_parent.get("id").and_then(Value::as_str) else {
+        let Some(parent_id) = eim_parent.get("inputId").and_then(Value::as_str) else {
             continue;
         };
         let Some(external_parent) = external_rows
@@ -101,16 +97,17 @@ pub(crate) fn append_children(
         else {
             continue;
         };
-        let Some(parent_app_id) = external_parent
-            .get("appId")
+        let Some(parent_app_id) = eim_parent
+            .get("id")
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
         else {
             continue;
         };
-        let parent_label = external_parent
+        let parent_label = eim_parent
             .get("label")
             .and_then(Value::as_str)
+            .or_else(|| external_parent.get("label").and_then(Value::as_str))
             .unwrap_or(parent_id)
             .trim();
         let context = parent_context(parent_id, parent_label);
@@ -133,9 +130,16 @@ pub(crate) fn append_children(
                 .filter(|name| valid_name(name))
                 .unwrap_or(unique_id.as_str());
 
-            let device_identity = identity(child);
+            let device_identity = identity_of(child);
             if let Some(identity) = &device_identity {
                 if !seen_identities.insert(identity.clone()) {
+                    continue;
+                }
+                // If the TV exposes the same stable CEC identity on a
+                // top-level input record, keep that top-level entry only.
+                if external_rows.iter().any(|top| {
+                    identity_of(top).as_ref() == Some(identity)
+                }) {
                     continue;
                 }
             }
@@ -175,12 +179,12 @@ pub(crate) fn append_children(
 }
 
 /// The EIM status response's last selected CEC uniqueId for one physical input.
-pub(crate) fn last_unique_id(response: &Value, parent_id: &str) -> Option<String> {
+pub(crate) fn last_unique_id(response: &Value, parent_input_id: &str) -> Option<String> {
     response
         .get("devices")?
         .as_array()?
         .iter()
-        .find(|row| row.get("id").and_then(Value::as_str) == Some(parent_id))?
+        .find(|row| row.get("inputId").and_then(Value::as_str) == Some(parent_input_id))?
         .get("lastUniqueId")
         .and_then(scalar)
 }
@@ -223,7 +227,7 @@ mod tests {
     fn collect(external: &[Value], eim: &[Value]) -> (Vec<Selectable>, HashMap<String, CecSelection>) {
         let mut inputs = vec![Selectable::new("HDMI_2", "DRAGON")];
         let mut selections = HashMap::new();
-        append_children(external, Some(eim), &mut inputs, &mut selections);
+        append_children(external, eim, &mut inputs, &mut selections);
         (inputs, selections)
     }
 
@@ -244,7 +248,7 @@ mod tests {
 
     #[test]
     fn duplicate_identity_is_not_based_on_unique_id_or_display_name() {
-        let external = vec![json!({"id":"HDMI_3","label":"HDMI 3","appId":"com.webos.app.hdmi3"})];
+        let external = vec![json!({"id":"com.webos.app.hdmi3","inputId":"HDMI_3","label":"HDMI 3","appId":"com.webos.app.hdmi3"})];
         let eim = vec![json!({
             "id":"HDMI_3",
             "subList":[
@@ -255,7 +259,7 @@ mod tests {
         })];
         let mut inputs = vec![Selectable::new("HDMI_3", "HDMI 3")];
         let mut selections = HashMap::new();
-        append_children(&external, Some(&eim), &mut inputs, &mut selections);
+        append_children(&external, &eim, &mut inputs, &mut selections);
 
         assert_eq!(inputs.len(), 3);
         assert_eq!(selections.len(), 2);
@@ -265,7 +269,7 @@ mod tests {
 
     #[test]
     fn matching_top_level_name_is_suppressed_only_at_depth_one() {
-        let external = vec![json!({"id":"HDMI_4","label":"Receiver","appId":"com.webos.app.hdmi4"})];
+        let external = vec![json!({"id":"com.webos.app.hdmi4","inputId":"HDMI_4","label":"Receiver","appId":"com.webos.app.hdmi4"})];
         let eim = vec![json!({
             "id":"HDMI_4",
             "subList":[
@@ -275,7 +279,7 @@ mod tests {
         })];
         let mut inputs = vec![Selectable::new("HDMI_4", "Receiver")];
         let mut selections = HashMap::new();
-        append_children(&external, Some(&eim), &mut inputs, &mut selections);
+        append_children(&external, &eim, &mut inputs, &mut selections);
 
         assert_eq!(inputs.len(), 2);
         assert_eq!(inputs[1].name, "Receiver · HDMI 4");
@@ -284,7 +288,7 @@ mod tests {
 
     #[test]
     fn missing_identity_does_not_cause_name_based_deduplication() {
-        let external = vec![json!({"id":"HDMI_1","label":"HDMI 1","appId":"com.webos.app.hdmi1"})];
+        let external = vec![json!({"id":"com.webos.app.hdmi1","inputId":"HDMI_1","label":"HDMI 1","appId":"com.webos.app.hdmi1"})];
         let eim = vec![json!({
             "id":"HDMI_1",
             "subList":[
@@ -314,7 +318,7 @@ mod tests {
     #[test]
     fn launch_payload_matches_the_verified_harness_contract() {
         let selection = CecSelection {
-            parent_id: "HDMI_2".into(),
+            parent_input_id: "HDMI_2".into(),
             parent_app_id: "com.webos.app.hdmi2".into(),
             unique_id: "4".into(),
         };
@@ -331,8 +335,8 @@ mod tests {
     fn last_unique_id_is_read_from_the_matching_parent_only() {
         let response = json!({
             "devices":[
-                {"id":"HDMI_1","lastUniqueId":2},
-                {"id":"HDMI_2","lastUniqueId":8}
+                {"id":"com.webos.app.hdmi1","inputId":"HDMI_1","lastUniqueId":2},
+                {"id":"com.webos.app.hdmi2","inputId":"HDMI_2","lastUniqueId":8}
             ]
         });
         assert_eq!(last_unique_id(&response, "HDMI_2").as_deref(), Some("8"));
