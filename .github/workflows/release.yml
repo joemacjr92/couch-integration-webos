@@ -61,7 +61,7 @@ jobs:
           else
             echo "Unsupported workflow event: $EVENT_NAME" >&2; exit 1
           fi
-          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?$ ]] || {
+          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?$ ]] || {
             echo "Invalid package version: $REQUESTED_VERSION" >&2; exit 1;
           }
           if [[ "$DRY_RUN" != "true" && "$GITHUB_REF" != "refs/heads/main" ]]; then
