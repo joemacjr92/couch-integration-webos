@@ -435,7 +435,6 @@ impl WebOsTv {
         self.mute_state = Some(on);
         Ok(())
     }
-
 }
 
 impl DeviceClient for WebOsTv {
