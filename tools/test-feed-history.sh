@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 VALIDATOR="$ROOT/tools/validate-feed-history.sh"
+RENEWER="$ROOT/tools/renew-feed-metadata.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 for tool in jq openssl sha256sum; do command -v "$tool" >/dev/null; done
@@ -40,4 +41,26 @@ make_fixture; jq '.packages += .packages' "$WORK/feed/feed.json" > "$WORK/feed/m
 make_fixture; jq '.packages[0].apk = "couch-integration-webos-0.1.0_pre4-r0.apk"' "$WORK/feed/feed.json" > "$WORK/feed/modified.json"; mv "$WORK/feed/modified.json" "$WORK/feed/feed.json"; sign_feed; run_bad 0.1.0_pre6; pass "filename/version mismatch rejected"
 make_fixture; jq '.sequence = 1.5' "$WORK/feed/feed.json" > "$WORK/feed/modified.json"; mv "$WORK/feed/modified.json" "$WORK/feed/feed.json"; sign_feed; run_bad 0.1.0_pre6; pass "non-integer sequence rejected"
 make_fixture; jq '.packages[0].protocol_version = 3' "$WORK/feed/feed.json" > "$WORK/feed/modified.json"; mv "$WORK/feed/modified.json" "$WORK/feed/feed.json"; sign_feed; run_bad 0.1.0_pre6; pass "wrong Couch protocol version rejected"
-echo "All webOS feed-history validation tests passed."
+# Metadata renewal must authenticate the current feed and preserve every package.
+make_fixture
+INDEX_BEFORE="$(sha256sum "$WORK/feed/APKINDEX.tar.gz" | awk '{print $1}')"
+APK_BEFORE="$(sha256sum "$WORK/feed/couch-integration-webos-0.1.0_pre5-r0.apk" | awk '{print $1}')"
+bash "$RENEWER" "$WORK/feed" "$WORK/private.pem" "$WORK/public.pem" >/dev/null
+[[ "$(jq -r '.sequence' "$WORK/feed/feed.json")" == "3" ]] || fail "renewal did not increment sequence"
+jq -e '.expires > .issued' "$WORK/feed/feed.json" >/dev/null || fail "renewal expiry is not after issue time"
+openssl dgst -sha256 -verify "$WORK/public.pem" -signature "$WORK/feed/feed.json.sig" "$WORK/feed/feed.json" >/dev/null || fail "renewed feed signature does not verify"
+[[ "$(sha256sum "$WORK/feed/APKINDEX.tar.gz" | awk '{print $1}')" == "$INDEX_BEFORE" ]] || fail "renewal changed APKINDEX"
+[[ "$(sha256sum "$WORK/feed/couch-integration-webos-0.1.0_pre5-r0.apk" | awk '{print $1}')" == "$APK_BEFORE" ]] || fail "renewal changed published APK"
+pass "metadata renewal increments sequence, re-signs metadata, and preserves packages"
+
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/wrong-private.pem" >/dev/null 2>&1
+make_fixture
+if bash "$RENEWER" "$WORK/feed" "$WORK/wrong-private.pem" "$WORK/public.pem" >/dev/null 2>&1; then fail "renewal accepted mismatched signing keys"; fi
+pass "metadata renewal rejects mismatched signing keys"
+
+make_fixture
+printf 'tamper' >> "$WORK/feed/couch-integration-webos-0.1.0_pre5-r0.apk"
+if bash "$RENEWER" "$WORK/feed" "$WORK/private.pem" "$WORK/public.pem" >/dev/null 2>&1; then fail "renewal accepted a modified historical APK"; fi
+pass "metadata renewal rejects modified historical APK"
+
+echo "All webOS feed-history and renewal tests passed."
