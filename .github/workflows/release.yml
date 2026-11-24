@@ -15,6 +15,11 @@ on:
         required: true
         default: true
         type: boolean
+      reset_feed_history:
+        description: Start a new feed trust history (required when changing repository signing keys)
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -53,6 +58,7 @@ jobs:
           REF_NAME: ${{ github.ref }}
           REQUESTED_VERSION: ${{ inputs.version }}
           DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
+          DISPATCH_RESET_HISTORY: ${{ inputs.reset_feed_history }}
         run: |
           set -euo pipefail
           if [[ "$EVENT_NAME" == "push" ]]; then
@@ -61,13 +67,18 @@ jobs:
             }
             REQUESTED_VERSION="0.1.0_pre5_git1"
             DRY_RUN=true
+            RESET_HISTORY=false
           elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             DRY_RUN="$DISPATCH_DRY_RUN"
+            RESET_HISTORY="$DISPATCH_RESET_HISTORY"
           else
             echo "Unsupported workflow event: $EVENT_NAME" >&2; exit 1
           fi
           [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?$ ]] || {
             echo "Invalid package version: $REQUESTED_VERSION" >&2; exit 1;
+          }
+          [[ "$RESET_HISTORY" == "true" || "$RESET_HISTORY" == "false" ]] || {
+            echo "Invalid reset_feed_history value: $RESET_HISTORY" >&2; exit 1;
           }
           if [[ "$DRY_RUN" != "true" && "$GITHUB_REF" != "refs/heads/main" ]]; then
             echo "Publishing is permitted only from main." >&2; exit 1
@@ -77,6 +88,7 @@ jobs:
           fi
           echo "version=$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
           echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+          echo "reset_history=$RESET_HISTORY" >> "$GITHUB_OUTPUT"
 
       - name: Check out existing Pages feed when present
         shell: bash
@@ -197,10 +209,13 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           DRY_RUN: ${{ steps.version.outputs.dry_run }}
+          RESET_HISTORY: ${{ steps.version.outputs.reset_history }}
         run: |
           set -euo pipefail
           FEED_ARCH="$GITHUB_WORKSPACE/existing-feed/preview/armv7"
-          if [[ -s "$FEED_ARCH/feed.json" ]]; then
+          if [[ "$RESET_HISTORY" == "true" ]]; then
+            echo "Explicit feed-history reset selected; old feed and APKs will not be carried forward."
+          elif [[ -s "$FEED_ARCH/feed.json" ]]; then
             ARGS=("$FEED_ARCH" "$GITHUB_WORKSPACE/couch-integration-webos/keys/webos-repository-public.pem" "$VERSION")
             if [[ "$DRY_RUN" == "true" ]]; then ARGS+=(--allow-existing-version); fi
             bash "$GITHUB_WORKSPACE/couch-integration-webos/tools/validate-feed-history.sh" "${ARGS[@]}"
@@ -262,6 +277,7 @@ jobs:
         shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          RESET_HISTORY: ${{ steps.version.outputs.reset_history }}
         run: |
           set -euo pipefail
           PLUGIN="$GITHUB_WORKSPACE/couch-integration-webos"
@@ -270,7 +286,7 @@ jobs:
           FEED="$PLUGIN/build/repository/preview"
           mkdir -p "$FEED/armv7"
           VERIFIED="$RUNNER_TEMP/webos-verified-packages.tsv"
-          if [[ -s "$RUNNER_TEMP/webos-verified-packages.tsv" ]]; then
+          if [[ "$RESET_HISTORY" != "true" && -s "$RUNNER_TEMP/webos-verified-packages.tsv" ]]; then
             while IFS=$'\t' read -r _VERSION PREVIOUS_APK _SIZE _SHA256; do
               cp -n -- "$GITHUB_WORKSPACE/existing-feed/preview/armv7/$PREVIOUS_APK" "$OUTPUT/$PREVIOUS_APK"
             done < "$VERIFIED"
@@ -295,7 +311,7 @@ jobs:
           test -s "$INDEX"
           PREVIOUS="$GITHUB_WORKSPACE/existing-feed/preview/armv7/feed.json"
           SEQUENCE=1
-          if [[ -s "$PREVIOUS" ]]; then
+          if [[ "$RESET_HISTORY" != "true" && -s "$PREVIOUS" ]]; then
             PREVIOUS_SEQUENCE="$(jq -er '.sequence | numbers' "$PREVIOUS")"
             SEQUENCE="$((PREVIOUS_SEQUENCE + 1))"
           fi
