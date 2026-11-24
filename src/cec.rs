@@ -261,7 +261,10 @@ mod tests {
         append_children(&external, &eim, &mut inputs, &mut map);
 
         assert!(inputs.iter().any(|input| input.name == "p3i · HDMI 2"));
-        let selection = map.values().next().expect("CEC child selection");
+        let selection = map
+            .values()
+            .find(|selection| selection.unique_id == "4")
+            .expect("depth-two CEC child selection");
         assert_eq!(selection.parent_input_id, "HDMI_2");
         assert_eq!(selection.parent_app_id, "com.webos.app.hdmi2");
         assert_eq!(selection.unique_id, "4");
