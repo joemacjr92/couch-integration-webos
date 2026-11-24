@@ -14,7 +14,7 @@ use couch_sdk::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr, TcpStream},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -27,6 +27,10 @@ const REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 const PAIR_BUDGET: Duration = Duration::from_secs(85);
 const PAIR_POLL_MS: u32 = 1500;
 const CERTIFICATE_CHANGED: &str = "The LG TV certificate changed; pair again";
+const CEC_EIM_STATUS: &str = "ssap://com.webos.service.eim/getAllInputStatus";
+const CEC_LAUNCH_SETTLE: Duration = Duration::from_millis(2500);
+
+mod cec;
 
 fn safe_label(value: &Value) -> Option<&str> {
     value
@@ -267,6 +271,7 @@ pub struct WebOsTv {
     url: String,
     pin: Arc<Mutex<Vec<u8>>>,
     next: u64,
+    cec_selections: HashMap<String, cec::CecSelection>,
 }
 
 impl WebOsTv {
@@ -298,6 +303,37 @@ impl WebOsTv {
 
     fn simple(&mut self, uri: &str) -> Result<()> {
         self.request(uri, json!({})).map(|_| ())
+    }
+
+    fn select_input(&mut self, id: &str) -> Result<()> {
+        let Some(selection) = self.cec_selections.get(id).cloned() else {
+            return self
+                .request("ssap://tv/switchInput", json!({"inputId": id}))
+                .map(|_| ());
+        };
+
+        // Verify that the selected CEC device is still present before launch.
+        // A stale selection must never be redirected to another device.
+        let before = self.request(CEC_EIM_STATUS, json!({}))?;
+        if !cec::contains_unique_id(&before, &selection, &selection.unique_id) {
+            return Err(Error::Rejected);
+        }
+
+        self.request(
+            "ssap://com.webos.applicationManager/launch",
+            cec::launch_payload(&selection),
+        )?;
+
+        // Preserve the proven v0.3.4 settle interval. Never retry a launch:
+        // an uncertain response is not evidence that the device was not selected.
+        std::thread::sleep(CEC_LAUNCH_SETTLE);
+        let after = self.request(CEC_EIM_STATUS, json!({}))?;
+        if cec::last_unique_id(&after, &selection.parent_input_id).as_deref()
+            != Some(selection.unique_id.as_str())
+        {
+            return Err(Error::Rejected);
+        }
+        Ok(())
     }
 
     fn button(&mut self, name: &str) -> Result<()> {
@@ -400,6 +436,7 @@ impl DeviceClient for WebOsTv {
             url: settings.url.clone(),
             pin,
             next: 0,
+            cec_selections: HashMap::new(),
         })
     }
 
@@ -426,9 +463,7 @@ impl DeviceClient for WebOsTv {
             }
             Function::MuteOn => self.muted(true),
             Function::MuteOff => self.muted(false),
-            Function::Input(id) if Self::supports_input(id) => self
-                .request("ssap://tv/switchInput", json!({"inputId": id}))
-                .map(|_| ()),
+            Function::Input(id) if Self::supports_input(id) => self.select_input(id),
             Function::App(id) if Self::supports_app(id) => self
                 .request("ssap://system.launcher/launch", json!({"id": id}))
                 .map(|_| ()),
@@ -527,7 +562,7 @@ impl DeviceClient for WebOsTv {
             .map_err(SdkError::from)?;
         let rows = response["devices"].as_array().ok_or(SdkError::Protocol)?;
         let mut seen = HashSet::new();
-        Ok(rows
+        let mut inputs: Vec<Selectable> = rows
             .iter()
             .filter_map(|row| {
                 let id = row["id"].as_str().or_else(|| row["appId"].as_str())?;
@@ -539,7 +574,22 @@ impl DeviceClient for WebOsTv {
                     && !name.chars().any(char::is_control))
                 .then(|| Selectable::new(id, name))
             })
-            .collect())
+            .collect();
+
+        // The physical list is useful even when EIM is unavailable. Keep it
+        // intact and simply omit CEC descendants for this refresh.
+        self.cec_selections.clear();
+        if let Ok(eim) = self.request(CEC_EIM_STATUS, json!({})) {
+            if let Some(eim_rows) = eim["devices"].as_array() {
+                cec::append_children(
+                    rows,
+                    eim_rows,
+                    &mut inputs,
+                    &mut self.cec_selections,
+                );
+            }
+        }
+        Ok(inputs)
     }
 
     fn supports_input(id: &str) -> bool {
