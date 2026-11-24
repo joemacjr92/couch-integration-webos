@@ -560,8 +560,18 @@ impl DeviceClient for WebOsTv {
         };
         // Subscriptions are opportunistic. A TV that does not support either
         // endpoint must still connect and serve ordinary requests normally.
-        let _ = client.subscribe("ssap://audio/getStatus", SubscriptionKind::AudioStatus);
-        let _ = client.subscribe("ssap://audio/getVolume", SubscriptionKind::Volume);
+        for (uri, kind) in [
+            ("ssap://audio/getStatus", SubscriptionKind::AudioStatus),
+            ("ssap://audio/getVolume", SubscriptionKind::Volume),
+        ] {
+            if let Err(error) = client.subscribe(uri, kind) {
+                // A rejected, malformed, or unsupported subscription is
+                // optional. A closed/broken transport is not a usable client.
+                if error == Error::Transport {
+                    return Err(SdkError::from(error));
+                }
+            }
+        }
         Ok(client)
     }
 
