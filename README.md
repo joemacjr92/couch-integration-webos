@@ -138,8 +138,20 @@ build manually and provide the desired APK-compatible version.
 - The initial publication creates the feed branch if it does not exist.
   Existing feed history is signature-checked, hash-checked and version-checked
   before it is carried forward.
-- A separate weekly workflow renews the signed feed metadata expiry without
-  rebuilding or changing the published APKs.
+- For the signing-key cutover, first update the repository Actions secrets
+  `APK_PRIVATE_KEY` and `APK_PUBLIC_KEY` to the shared CouchOS key pair.
+  Then dispatch a build from `main` with **reset_feed_history** enabled.
+  This deliberately starts feed sequence 1 and publishes only the newly
+  signed package; older GitHub Releases remain available as historical
+  artifacts, but old-key packages are not carried into the new feed.
+  Keep **dry_run** enabled for the first run to validate the artifact. After
+  it succeeds, run again with **dry_run** disabled and the same reset option
+  to publish the clean feed.
+- Do not run the weekly feed-renewal workflow until the key secrets have been
+  updated and the new feed has been published. Afterward, it will renew the
+  feed using the shared key.
+- The package workflow runs `cargo fmt -- --check` and
+  `cargo test --locked --all-targets` before its ARMv7 package build.
 
 After the first publication, enable GitHub Pages in repository settings with
 the `gh-pages` branch and repository root as the publishing source. The feed
