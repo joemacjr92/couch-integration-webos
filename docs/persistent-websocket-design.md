@@ -110,7 +110,7 @@ Recommended design, still on the calling thread:
 
 The reference implementation uses one ID per subscription and routes messages by that ID. The notification payload schema is endpoint-specific. For audio status, the mute field is `mute`; for volume, normalize `volumeStatus` when present and otherwise use the top-level payload. Do not assume the volume subscription contains mute state or that `getVolume` always has the same shape across firmware.
 
-The integration currently has a `mute_state` helper that accepts `muted` and `mute`. Keep that compatibility behavior, but add a separate normalizer for the volume-status envelope rather than conflating the two endpoint schemas.
+Mute state is sourced from the `ssap://audio/getStatus` subscription's `mute` field only. Do not infer mute state from `getVolume` or its `volumeStatus` envelope; that speculative parsing was reverted on `main`. The volume subscription normalizer extracts volume only, keeping the endpoint schemas separate.
 
 ### Test matrix before implementation
 
