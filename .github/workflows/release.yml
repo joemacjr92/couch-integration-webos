@@ -140,6 +140,14 @@ jobs:
           rm "build/toolchains/$NAME.tar.xz"
           echo "ZIG=$GITHUB_WORKSPACE/couch-sdk-reference/build/toolchains/$NAME/zig" >> "$GITHUB_ENV"
 
+      - name: Run formatting and full host test suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/couch-integration-webos"
+          cargo fmt -- --check
+          cargo test --locked --all-targets
+
       - name: Prepare versioned plugin manifest
         shell: bash
         env:
