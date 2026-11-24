@@ -2,7 +2,9 @@
 //!
 //! Physical inputs remain top-level choices. EIM records associate a physical
 //! inputId with its HDMI launch-point id and expose the CEC subList. Duplicate
-//! suppression uses TV-reported CEC identity, never display name alone.
+//! suppression compares depth-one CEC names against the TV's actual top-level
+//! input labels, and also uses CEC identity when the TV exposes it. No model or
+//! device name is hardcoded.
 
 use couch_sdk::Selectable;
 use serde_json::Value;
@@ -85,6 +87,11 @@ pub(crate) fn append_children(
             .or_else(|| external_parent.get("label").and_then(Value::as_str))
             .unwrap_or(parent_input_id);
         let context = parent_context(parent_input_id, label);
+        let top_level_names: HashSet<String> = external_rows.iter()
+            .filter_map(|row| row.get("label").and_then(Value::as_str))
+            .map(|name| name.trim().to_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect();
         let Some(children) = eim_parent.get("subList").and_then(Value::as_array) else {
             continue;
         };
@@ -101,6 +108,13 @@ pub(crate) fn append_children(
                 .map(str::trim).filter(|name| valid_name(name))
                 .unwrap_or(unique_id.as_str());
             let child_identity = identity(child);
+
+            // A depth-one EIM entry with a name already present in the TV's
+            // top-level input list is represented there; don't duplicate it.
+            // This is derived from the current probe, not a hardcoded model name.
+            if _depth == 1 && top_level_names.contains(&name.to_lowercase()) {
+                continue;
+            }
 
             if let Some(device_identity) = &child_identity {
                 if !seen.insert(device_identity.clone()) {
@@ -169,10 +183,10 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn preserves_top_level_input_and_suppresses_same_tv_reported_identity() {
+    fn preserves_top_level_input_and_suppresses_depth_one_name_already_at_top_level() {
         let external = vec![
             json!({"id":"HDMI_2","label":"HDMI 2","appId":"hdmi2"}),
-            json!({"id":"CEC_DRAGON","label":"DRAGON","vendorId":805705,"physicalAddress":8192})
+            json!({"id":"CEC_AUDIO","label":"DRAGON"})
         ];
         let eim = vec![json!({
             "id":"com.webos.app.hdmi2","inputId":"HDMI_2","label":"HDMI 2",
