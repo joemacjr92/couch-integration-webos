@@ -30,19 +30,9 @@ The package protocol currently has no unsolicited event frame from an integratio
 
 This distinction must remain explicit: continuous receive is not, by itself, a host-side push notification feature.
 
-## Candidate design
+## Superseded worker proposal
 
-Use a single transport-owner worker for the lifetime of a connected `WebOsTv`:
-
-1. The worker owns the main SSAP socket and pointer socket. No other thread reads or writes either WebSocket.
-2. The synchronous `DeviceClient` methods submit one command to the worker and wait for its result.
-3. Use a zero-capacity rendezvous channel (or equivalent one-request handoff), not an unbounded command backlog. The Couch broker already serializes client calls.
-4. The worker continuously reads main-socket frames between command handoffs. It dispatches response frames by request ID and processes subscription notifications independently.
-5. A shared, narrowly scoped state snapshot holds notification-derived values such as mute, volume, power, foreground app, and sound output. Status can combine that snapshot with explicit reads where necessary.
-6. Pointer input is sent by the same owner so the pointer socket is never concurrently accessed. Its receive path handles control frames and connection closure.
-7. Dropping/replacing the client sends shutdown, closes sockets, and joins the worker with a bounded deadline.
-
-The worker must not silently retry commands. A timeout or disconnect is an uncertain outcome and must be surfaced to the caller; reconnect/resubscribe belongs to a separately specified lifecycle policy.
+An earlier candidate proposed moving socket ownership to a background worker and handing synchronous calls to it through a rendezvous channel. The feasibility review below rejects that design for the pinned SDK: it introduces a second thread and an internal dispatch mechanism despite the SDK's ownership/no-queue contract. It is retained here only as investigation history, not as an implementation recommendation.
 
 ## Important implementation questions
 
@@ -92,3 +82,48 @@ The first path is the only integration-only change that fits the pinned SDK. The
 ## Next implementation decision
 
 Proceed with path 1 as a bounded, test-first improvement: add explicit handling for known SSAP subscription notifications encountered during ordinary response reads, without adding threads, channels, or asynchronous claims. Add fake-peer tests for notification-before-response, unrelated response IDs, malformed messages, and timeout behavior. Keep subscription registration and cached state scoped to the lifetime of the existing synchronous connection. Revisit a true always-on receiver only after Couch SDK and package protocol provide the required contract.
+
+
+## Synchronous subscription investigation
+
+The reference client confirms two useful SSAP subscriptions:
+
+- `ssap://audio/getStatus` — mute state is exposed as `payload.mute` in the reference callback.
+- `ssap://audio/getVolume` — volume is exposed as `payload.volumeStatus.volume` on newer firmware, with a compatibility fallback to `payload.volume` on older firmware. The complete volume-status object is retained by the reference client.
+
+Both are sent as SSAP messages with `type: "subscribe"`, not ordinary `type: "request"`. The reference client allocates a stable message ID and registers the notification handler before sending the subscribe message. The first message for that ID establishes the subscription result/state; later messages carrying that same ID are delivered to the subscription handler. This means a synchronous implementation must reserve and recognize the subscription ID for the entire connection lifetime, rather than treating the first response as the end of that ID's lifecycle.
+
+### Integration-specific implications
+
+The current `WebOsTv::request` sends `type: "request"`, waits for one matching ID, and currently discards every message with a different ID. A subscription implementation cannot safely be added by simply changing the message type: it needs a small message dispatcher in the existing synchronous read path.
+
+Recommended design, still on the calling thread:
+
+1. Add a typed subscription registry keyed by SSAP message ID (and optionally URI for diagnostics). Initially support only audio status and volume status.
+2. Add a `subscribe` helper that allocates a unique ID, sends `type: "subscribe"`, waits for that ID's successful initial response, extracts the initial state, and only then retains the ID in the registry. Do not register after sending if there is any possibility of reading frames between send and registration; reserve the ID first, then mark it active after success.
+3. In the normal request receive loop, route messages whose IDs belong to active subscriptions into a pure state-update function, then continue waiting for the normal request's ID. Never let a subscription notification satisfy an unrelated request.
+4. Preserve the existing per-request deadline. A notification must not reset the deadline or extend a command indefinitely.
+5. Keep current explicit `getVolume` reads initially. Subscription state is opportunistic because no code reads the socket while the package is idle. Use it to validate notification parsing and to keep the most recently observed mute/volume snapshot coherent during active traffic; do not claim it is always fresh.
+6. If a subscription fails or is rejected, keep ordinary request/status behavior working. Subscription support is an enhancement, not a reason to make pairing or the entire connection unusable.
+
+### Important nuance: subscription IDs and payloads
+
+The reference implementation uses one ID per subscription and routes messages by that ID. The notification payload schema is endpoint-specific. For audio status, the mute field is `mute`; for volume, normalize `volumeStatus` when present and otherwise use the top-level payload. Do not assume the volume subscription contains mute state or that `getVolume` always has the same shape across firmware.
+
+The integration currently has a `mute_state` helper that accepts `muted` and `mute`. Keep that compatibility behavior, but add a separate normalizer for the volume-status envelope rather than conflating the two endpoint schemas.
+
+### Test matrix before implementation
+
+- Subscribe sends `type: "subscribe"` with a unique ID and accepts a successful initial subscription response.
+- Initial audio-status payload populates mute state from `mute` (including explicit `false`).
+- Volume payload normalizes both nested `volumeStatus` and legacy top-level fields.
+- A subscription notification arriving before an ordinary request's response updates cached state and does not complete the ordinary request.
+- An unrelated/unknown ID is ignored without corrupting the pending request.
+- A subscription notification with malformed or invalid fields does not erase a previously valid cached value.
+- A rejected/unsupported subscription leaves ordinary `getVolume` and status requests functional.
+- A request timeout remains bounded even if subscription notifications continue arriving.
+- Subscription registry and cached state are discarded with the WebSocket/client; no stale state crosses reconnects.
+
+### Scope boundary
+
+This path is **not** a persistent receiver. It only processes notifications when a synchronous operation is already reading the WebSocket. It is a useful, testable improvement compatible with the current SDK, but it does not solve idle-time state freshness or immediate Couch UI updates. Those require the upstream asynchronous SDK and package-event protocol work described above.
