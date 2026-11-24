@@ -313,6 +313,7 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
         [
             "register",
             "register",
+            "ssap://audio/getStatus",
             "ssap://audio/volumeUp",
             "ssap://audio/setMute:false",
             "ssap://com.webos.service.networkinput/getPointerInputSocket",
