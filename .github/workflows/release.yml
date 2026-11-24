@@ -44,15 +44,31 @@ jobs:
         id: version
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
           REQUESTED_VERSION: ${{ inputs.version }}
-          DRY_RUN: ${{ steps.version.outputs.dry_run }}
+          DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?$ ]] || {
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            [[ "$REF_NAME" == "refs/heads/feature/hdmi-cec-inputs" ]] || {
+              echo "Push builds are restricted to feature/hdmi-cec-inputs." >&2; exit 1;
+            }
+            REQUESTED_VERSION="0.1.0_pre5_git1"
+            DRY_RUN=true
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            DRY_RUN="$DISPATCH_DRY_RUN"
+          else
+            echo "Unsupported workflow event: $EVENT_NAME" >&2; exit 1
+          fi
+          [[ "$REQUESTED_VERSION" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?$ ]] || {
             echo "Invalid package version: $REQUESTED_VERSION" >&2; exit 1;
           }
           if [[ "$DRY_RUN" != "true" && "$GITHUB_REF" != "refs/heads/main" ]]; then
             echo "Publishing is permitted only from main." >&2; exit 1
+          fi
+          if [[ "$DRY_RUN" != "true" && "$EVENT_NAME" != "workflow_dispatch" ]]; then
+            echo "Publishing requires an explicit workflow_dispatch." >&2; exit 1
           fi
           echo "version=$REQUESTED_VERSION" >> "$GITHUB_OUTPUT"
           echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
