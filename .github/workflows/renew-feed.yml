@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: webos-pages-publish
@@ -15,17 +15,21 @@ concurrency:
 jobs:
   renew:
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out webOS integration
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           path: couch-integration-webos
 
       - name: Check out published GitHub Pages feed
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           ref: gh-pages
           path: published-feed
 
