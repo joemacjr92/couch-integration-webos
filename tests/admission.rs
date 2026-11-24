@@ -289,15 +289,16 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
     host.configure_with(tv.settings(), Some(&credential))
         .unwrap();
     host.command("volume-up").unwrap();
-    // The fake TV notified us that mute was enabled outside Couch while the
-    // volume request was in flight. Toggle must consume that update and mute off.
+    // Toggle is delegated to the TV's native MUTE key over the pointer socket;
+    // it must not depend on a cached mute-state read.
     host.command("mute").unwrap();
     host.command("up").unwrap();
     tv.wait_for("pointer:UP");
+    tv.wait_for("pointer:MUTE");
     let status = host.status().unwrap();
     assert_eq!(status.on, Some(true));
     assert_eq!(status.volume, Some(37));
-    assert_eq!(status.muted, Some(false));
+    assert_eq!(status.muted, Some(true));
     assert_eq!(status.input.as_deref(), Some("HDMI_1"));
     assert_eq!(status.sound_output.as_deref(), Some("external_arc"));
     assert_eq!(status.picture_mode.as_deref(), Some("cinema"));
@@ -317,8 +318,8 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
             "register",
             "ssap://audio/getStatus",
             "ssap://audio/volumeUp",
-            "ssap://audio/setMute:false",
             "ssap://com.webos.service.networkinput/getPointerInputSocket",
+            "pointer:MUTE",
             "pointer:UP",
             "ssap://com.webos.service.tvpower/power/getPowerState",
             "ssap://audio/getVolume",
