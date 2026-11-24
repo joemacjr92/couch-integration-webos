@@ -1,7 +1,8 @@
 //! Hierarchical HDMI-CEC input discovery for LG webOS.
 //!
-//! Physical inputs remain top-level choices. EIM records associate a physical
-//! inputId with its HDMI launch-point id and expose the CEC subList. Duplicate
+//! Physical inputs remain top-level choices. EIM records identify the
+//! physical input with "id", its HDMI launch app with "appId", and expose the
+//! CEC descendants through "subList". Duplicate
 //! suppression compares depth-one CEC names against the TV's actual top-level
 //! input labels, and also uses CEC identity when the TV exposes it. No model or
 //! device name is hardcoded.
