@@ -501,7 +501,13 @@ impl DeviceClient for WebOsTv {
             mute_subscription_id: None,
             cec_selections: HashMap::new(),
         };
-        client.subscribe_audio_status().map_err(SdkError::from)?;
+        // Mute Toggle uses the TV's native pointer MUTE key and does not
+        // depend on this subscription. Treat audio-status subscription as
+        // optional so an unsupported or malformed status response cannot
+        // prevent the TV's other controls from connecting.
+        if client.subscribe_audio_status().is_err() {
+            client.mute_subscription_id = None;
+        }
         Ok(client)
     }
 
