@@ -219,6 +219,10 @@ fn serve(
                     {"id": "HDMI_2", "label": "Blu-ray"}
                 ]
             }),
+            "ssap://com.webos.service.eim/getAllInputStatus" => json!({
+                "returnValue": true,
+                "devices": []
+            }),
             "ssap://com.webos.applicationManager/listLaunchPoints" => json!({
                 "returnValue": true,
                 "launchPoints": [
@@ -288,6 +292,7 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
             "ssap://com.webos.service.apiadapter/audio/getSoundOutput",
             "ssap://settings/getSystemSettings",
             "ssap://tv/getExternalInputList",
+            "ssap://com.webos.service.eim/getAllInputStatus",
             "ssap://com.webos.applicationManager/listLaunchPoints",
             "ssap://system.launcher/launch",
             "ssap://com.webos.service.apiadapter/audio/changeSoundOutput",
