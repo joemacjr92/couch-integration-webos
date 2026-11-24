@@ -54,6 +54,12 @@ fn mute_state(volume: &Value) -> Option<bool> {
         .and_then(Value::as_bool)
 }
 
+/// Prefer the last state reported by the TV; use a fresh observation only
+/// when no state has been cached yet.
+fn next_mute_state(cached: Option<bool>, observed: Option<bool>) -> Option<bool> {
+    cached.or(observed).map(|muted| !muted)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub url: String,
@@ -280,6 +286,7 @@ pub struct WebOsTv {
     url: String,
     pin: Arc<Mutex<Vec<u8>>>,
     next: u64,
+    mute_state: Option<bool>,
     cec_selections: HashMap<String, cec::CecSelection>,
 }
 
@@ -381,8 +388,19 @@ impl WebOsTv {
     }
 
     fn muted(&mut self, on: bool) -> Result<()> {
-        self.request("ssap://audio/setMute", json!({"mute": on}))
-            .map(|_| ())
+        self.request("ssap://audio/setMute", json!({"mute": on}))?;
+        self.mute_state = Some(on);
+        Ok(())
+    }
+
+    fn toggle_mute(&mut self) -> Result<()> {
+        let observed = if self.mute_state.is_none() {
+            Some(mute_state(&self.volume()?).ok_or(Error::Protocol)?)
+        } else {
+            None
+        };
+        let next = next_mute_state(self.mute_state, observed).ok_or(Error::Protocol)?;
+        self.muted(next)
     }
 }
 
@@ -445,6 +463,7 @@ impl DeviceClient for WebOsTv {
             url: settings.url.clone(),
             pin,
             next: 0,
+            mute_state: None,
             cec_selections: HashMap::new(),
         })
     }
@@ -462,10 +481,7 @@ impl DeviceClient for WebOsTv {
             Function::PowerOff => self.simple("ssap://system/turnOff"),
             Function::VolumeUp => self.simple("ssap://audio/volumeUp"),
             Function::VolumeDown => self.simple("ssap://audio/volumeDown"),
-            Function::Mute => {
-                let muted = mute_state(&self.volume()?).ok_or(Error::Protocol)?;
-                self.muted(!muted)
-            }
+            Function::Mute => self.toggle_mute(),
             Function::MuteOn => self.muted(true),
             Function::MuteOff => self.muted(false),
             Function::Input(id) if Self::supports_input(id) => self.select_input(id),
@@ -544,6 +560,9 @@ impl DeviceClient for WebOsTv {
             .and_then(|value| u8::try_from(value).ok())
             .filter(|value| *value <= 100);
         let muted = mute_state(&volume);
+        if let Some(muted) = muted {
+            self.mute_state = Some(muted);
+        }
         let input = foreground["appId"]
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
@@ -835,15 +854,15 @@ mod tests {
     }
 
     #[test]
-    fn mute_toggle_inverts_the_reported_state() {
-        for (response, expected) in [
-            (json!({"muted": false}), true),
-            (json!({"muted": true}), false),
-            (json!({"mute": false}), true),
-            (json!({"mute": true}), false),
+    fn mute_toggle_prefers_cached_state_and_falls_back_to_observed_state() {
+        for (cached, observed, expected) in [
+            (Some(false), Some(true), Some(true)),
+            (Some(true), Some(false), Some(false)),
+            (None, Some(false), Some(true)),
+            (None, Some(true), Some(false)),
+            (None, None, None),
         ] {
-            let current = mute_state(&response).expect("fixture has a mute state");
-            assert_eq!(!current, expected, "{response}");
+            assert_eq!(next_mute_state(cached, observed), expected);
         }
     }
 
