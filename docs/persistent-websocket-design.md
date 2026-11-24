@@ -71,3 +71,24 @@ The worker must not silently retry commands. A timeout or disconnect is an uncer
 - No host/Couch protocol changes in this branch unless investigation proves they are required and the change is separately agreed.
 - No automatic retry of non-idempotent TV commands.
 - No claim of immediate UI updates until Couch exposes an event path from the package to the host.
+
+## Feasibility decision against the pinned SDK
+
+The candidate worker design above is **not compatible with the current SDK contract as written**. This is no longer an open question based on interpretation: the pinned `DeviceClient` documentation says that the client instance owns its transport, is never shared between threads, and assumes that the client itself does no internal queuing. The zero-capacity handoff still introduces a second thread and an internal command-dispatch mechanism, so calling it a rendezvous channel does not make it compliant.
+
+The pinned package server reinforces this boundary. It owns one mutable `Option<C>` on its serving thread and calls `connect_with`, `execute`, `status`, `inputs`, and `apps` synchronously while processing one framed host request at a time. On configure it drops the client; on later device requests it lazily creates a new one. There is no callback/event sink exposed to a client, and the protocol has no unsolicited package-to-host state event.
+
+### Consequence
+
+Do not implement the worker in this integration against the current SDK. It would violate an explicit SDK assumption and still would not provide immediate Couch UI updates because the package has no event path to the host.
+
+### Supported paths
+
+1. **Stay within the current SDK:** keep socket ownership and all I/O on the calling thread. Process unsolicited SSAP notifications whenever a synchronous request is reading frames, retain subscription-derived state for the next status call, and preserve request-ID correlation. This can improve correctness during active traffic, but it cannot receive while the package is idle.
+2. **Change the SDK and package protocol upstream:** introduce an explicit asynchronous/event-capable client contract and host event channel. The SDK would need to define lifecycle, cancellation, reconnection, event backpressure, and whether a separate transport task is permitted. The package server and host must both support delivering state events. Only after that contract exists should this integration add a persistent receiver.
+
+The first path is the only integration-only change that fits the pinned SDK. The second is the proper route if the actual requirement is continuously updated state while idle. Do not disguise path 1 as a persistent background receiver, and do not implement path 2 locally in this integration.
+
+## Next implementation decision
+
+Proceed with path 1 as a bounded, test-first improvement: add explicit handling for known SSAP subscription notifications encountered during ordinary response reads, without adding threads, channels, or asynchronous claims. Add fake-peer tests for notification-before-response, unrelated response IDs, malformed messages, and timeout behavior. Keep subscription registration and cached state scoped to the lifetime of the existing synchronous connection. Revisit a true always-on receiver only after Couch SDK and package protocol provide the required contract.
