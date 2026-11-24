@@ -47,9 +47,11 @@ environment or exported Couch configuration.
 
 The input selector keeps the physical inputs reported by
 `ssap://tv/getExternalInputList` and augments them with downstream devices
-reported by `ssap://com.webos.service.eim/getAllInputStatus`. EIM's
-`inputId` associates a topology record with its physical input, while its
-`id` identifies the parent HDMI launch-point app.
+reported by `ssap://com.webos.service.eim/getAllInputStatus`. In the EIM
+response, `id` identifies the physical input (for example, `HDMI_2`), while
+`appId` identifies the parent HDMI launch-point app (for example,
+`com.webos.app.hdmi2`). The `subList` contains that input's CEC descendants.
+The parser also accepts the alternate `inputId` field when present.
 
 CEC descendants are flattened into the existing Couch input selector and
 labelled with their parent context (for example, `p3i · HDMI 2`). The
