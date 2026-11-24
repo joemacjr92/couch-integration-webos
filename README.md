@@ -73,3 +73,50 @@ No test or build command pairs with a physical TV. Hardware validation must be
 scheduled separately and should cover a secure pairing, reconnect, all remote
 buttons, status and input selection, network power-off, core-owned wake/IR power,
 package upgrade and rollback.
+
+## Preview package feed
+
+The webOS integration uses the CouchOS ARMv7 APK packaging and signed preview
+feed format. Once the first package is explicitly published, the feed will be
+served from:
+
+`https://joemacjr92.github.io/couch-integration-webos/preview`
+
+The repository layout on the `gh-pages` branch is:
+
+```
+.nojekyll
+preview/
+└── armv7/
+    ├── APKINDEX.tar.gz
+    ├── couch-integration-webos-<version>-r0.apk
+    ├── feed.json
+    └── feed.json.sig
+```
+
+The committed repository verification key is
+[`keys/webos-repository-public.pem`](keys/webos-repository-public.pem). The
+matching private key and public-key secret are held in the repository's GitHub
+Actions secrets as `APK_PRIVATE_KEY` and `APK_PUBLIC_KEY`; the private key
+must never be committed. The packaging workflow checks that the private key,
+public-key secret and committed public key all match before signing anything.
+
+### Building and publishing
+
+Use **Actions → Build webOS integration package → Run workflow** and provide a
+package version such as `0.1.0_pre5`.
+
+- Leave **dry_run** enabled to build and validate without publishing. The
+  signed APK and preview feed are uploaded as a workflow artifact.
+- Publishing is allowed only when the workflow is dispatched from `main`
+  with dry-run disabled. It updates the `gh-pages` branch and creates a
+  GitHub Release for the selected version.
+- The initial publication creates the feed branch if it does not exist.
+  Existing feed history is signature-checked, hash-checked and version-checked
+  before it is carried forward.
+- A separate weekly workflow renews the signed feed metadata expiry without
+  rebuilding or changing the published APKs.
+
+After the first publication, enable GitHub Pages in repository settings with
+the `gh-pages` branch and repository root as the publishing source. The feed
+is not live until that first publication and Pages configuration are complete.
