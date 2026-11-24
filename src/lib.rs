@@ -281,6 +281,7 @@ pub struct WebOsTv {
     pin: Arc<Mutex<Vec<u8>>>,
     next: u64,
     mute_state: Option<bool>,
+    mute_subscription_id: Option<String>,
     cec_selections: HashMap<String, cec::CecSelection>,
 }
 
@@ -298,6 +299,14 @@ impl WebOsTv {
         let until = Instant::now() + IO_TIMEOUT;
         loop {
             let value = read(&mut self.socket, until)?;
+            if self
+                .mute_subscription_id
+                .as_deref()
+                .is_some_and(|subscription_id| value["id"] == subscription_id)
+            {
+                self.update_mute_subscription(&value);
+                continue;
+            }
             if value["id"] != id {
                 continue;
             }
@@ -308,6 +317,46 @@ impl WebOsTv {
                 return Err(Error::Protocol);
             }
             return Ok(value["payload"].clone());
+        }
+    }
+
+    /// Subscribe using the same SSAP subscription flow as Home Assistant.
+    /// The TV reuses this request ID for subsequent mute-state notifications.
+    fn subscribe_audio_status(&mut self) -> Result<()> {
+        self.next += 1;
+        let id = format!("couch-{}", self.next);
+        send(
+            &mut self.socket,
+            json!({
+                "id": id,
+                "type": "subscribe",
+                "uri": "ssap://audio/getStatus",
+                "payload": {}
+            }),
+        )?;
+
+        let until = Instant::now() + IO_TIMEOUT;
+        loop {
+            let value = read(&mut self.socket, until)?;
+            if value["id"] != id {
+                continue;
+            }
+            if value["type"] == "error" || value["payload"]["returnValue"] == false {
+                return Err(Error::Rejected);
+            }
+            if value["type"] != "response" {
+                return Err(Error::Protocol);
+            }
+            self.update_mute_subscription(&value);
+            self.mute_subscription_id = Some(id);
+            return Ok(());
+        }
+    }
+
+    /// Apply an initial subscription response or a later update notification.
+    fn update_mute_subscription(&mut self, message: &Value) {
+        if let Some(muted) = mute_state(&message["payload"]) {
+            self.mute_state = Some(muted);
         }
     }
 
@@ -381,10 +430,6 @@ impl WebOsTv {
         self.request("ssap://audio/getVolume", json!({}))
     }
 
-    fn audio_status(&mut self) -> Result<Value> {
-        self.request("ssap://audio/getStatus", json!({}))
-    }
-
     fn muted(&mut self, on: bool) -> Result<()> {
         self.request("ssap://audio/setMute", json!({"mute": on}))?;
         self.mute_state = Some(on);
@@ -392,9 +437,9 @@ impl WebOsTv {
     }
 
     fn toggle_mute(&mut self) -> Result<()> {
-        // Always read the current TV state. A cached value can be stale when
-        // mute is changed by the TV remote or another controller.
-        let current = mute_state(&self.audio_status()?).ok_or(Error::Protocol)?;
+        // The subscription keeps this state current, including changes made
+        // with the physical remote or another controller.
+        let current = self.mute_state.ok_or(Error::Protocol)?;
         self.muted(!current)
     }
 }
@@ -452,15 +497,18 @@ impl DeviceClient for WebOsTv {
         let mut socket =
             connect_socket(&settings.url, pin.clone(), IO_TIMEOUT).map_err(SdkError::from)?;
         registered(&mut socket, &credential.key).map_err(SdkError::from)?;
-        Ok(Self {
+        let mut client = Self {
             socket,
             pointer: None,
             url: settings.url.clone(),
             pin,
             next: 0,
             mute_state: None,
+            mute_subscription_id: None,
             cec_selections: HashMap::new(),
-        })
+        };
+        client.subscribe_audio_status().map_err(SdkError::from)?;
+        Ok(client)
     }
 
     fn pair_start(
@@ -527,7 +575,6 @@ impl DeviceClient for WebOsTv {
             )
             .map_err(SdkError::from)?;
         let volume = self.volume().map_err(SdkError::from)?;
-        let audio_status = self.audio_status().map_err(SdkError::from)?;
         let foreground = self
             .request(
                 "ssap://com.webos.applicationManager/getForegroundAppInfo",
@@ -555,10 +602,7 @@ impl DeviceClient for WebOsTv {
             .as_u64()
             .and_then(|value| u8::try_from(value).ok())
             .filter(|value| *value <= 100);
-        let muted = mute_state(&audio_status);
-        if let Some(muted) = muted {
-            self.mute_state = Some(muted);
-        }
+        let muted = self.mute_state;
         let input = foreground["appId"]
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
