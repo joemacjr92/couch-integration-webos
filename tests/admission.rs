@@ -200,7 +200,10 @@ fn serve(
                 json!({"returnValue": true, "state": "Active"})
             }
             "ssap://audio/getVolume" => {
-                json!({"returnValue": true, "volume": 37, "mute": false})
+                json!({"returnValue": true, "volume": 37})
+            }
+            "ssap://audio/getStatus" => {
+                json!({"returnValue": true, "mute": false})
             }
             "ssap://com.webos.applicationManager/getForegroundAppInfo" => {
                 json!({"returnValue": true, "appId": "HDMI_1", "appName": "Game console"})
@@ -288,6 +291,7 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
             "pointer:UP",
             "ssap://com.webos.service.tvpower/power/getPowerState",
             "ssap://audio/getVolume",
+            "ssap://audio/getStatus",
             "ssap://com.webos.applicationManager/getForegroundAppInfo",
             "ssap://com.webos.service.apiadapter/audio/getSoundOutput",
             "ssap://settings/getSystemSettings",
