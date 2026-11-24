@@ -17,7 +17,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: webos-pages-publish
@@ -25,6 +25,11 @@ concurrency:
 
 jobs:
   build:
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      dry_run: ${{ steps.version.outputs.dry_run }}
+    permissions:
+      contents: read
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -323,32 +328,49 @@ jobs:
           sha256sum "$INDEX" "$REPO_ARCH/feed.json" "$REPO_ARCH/feed.json.sig"
           touch "$PLUGIN/build/repository/.nojekyll"
 
-      - name: Upload dry-run package and feed
-        if: steps.version.outputs.dry_run == 'true'
+      - name: Upload package and feed artifact
         uses: actions/upload-artifact@v4
         with:
-          name: webos-preview-feed-dry-run
+          name: webos-package-feed
           path: |
             couch-integration-webos/build/integrations/*.apk
-            couch-integration-webos/build/repository/preview/armv7/*
+            couch-integration-webos/build/repository/**
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
 
+  publish:
+    if: needs.build.outputs.dry_run == 'false' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out webOS integration
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download built package and feed
+        uses: actions/download-artifact@v4
+        with:
+          name: webos-package-feed
+          path: package-artifact
+
       - name: Publish package feed to GitHub Pages
-        if: steps.version.outputs.dry_run == 'false'
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: gh-pages
-          publish_dir: couch-integration-webos/build/repository
+          publish_dir: package-artifact/repository
           destination_dir: .
           commit_message: "Publish webOS integration preview feed"
 
       - name: Publish GitHub Release
-        if: steps.version.outputs.dry_run == 'false'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
+          tag_name: v${{ needs.build.outputs.version }}
           target_commitish: main
           generate_release_notes: true
-          files: couch-integration-webos/build/integrations/couch-integration-webos-${{ steps.version.outputs.version }}-r0.apk
+          files: package-artifact/integrations/couch-integration-webos-${{ needs.build.outputs.version }}-r0.apk
