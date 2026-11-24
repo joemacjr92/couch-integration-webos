@@ -124,6 +124,24 @@ The integration currently has a `mute_state` helper that accepts `muted` and `mu
 - A request timeout remains bounded even if subscription notifications continue arriving.
 - Subscription registry and cached state are discarded with the WebSocket/client; no stale state crosses reconnects.
 
-### Scope boundary
+### Synchronous subscription implementation status
+
+The first integration-only implementation is now present in `src/lib.rs`.
+
+- On successful authenticated connection, the client makes best-effort subscriptions to `ssap://audio/getStatus` and `ssap://audio/getVolume`.
+- Each subscription uses its own monotonically allocated SSAP message ID and sends `type: "subscribe"`.
+- The initial response must be a successful `response` with one of the reference client's success indicators: `returnValue: true`, `subscribed: true`, or `subscription: true`. An explicit rejection or malformed acknowledgement leaves that subscription inactive.
+- Successful subscription IDs are retained for the lifetime of the `WebOsTv` instance. During an ordinary request read, frames for those IDs are dispatched to the corresponding audio-state parser; the pending command continues waiting for its own ID.
+- Volume notifications accept both the nested `volumeStatus` envelope and the legacy top-level shape. Audio status uses the `mute` field. Only valid values update the cache, so malformed updates do not erase prior state.
+- The ordinary `getVolume` request remains in place. The cached values are fallback state only when a response omits a field; they are not represented as continuously fresh.
+- Subscription setup errors are deliberately non-fatal to connection establishment and ordinary commands.
+
+Unit tests now cover nested and legacy volume payloads, explicit false mute values, malformed-value preservation, subscription-ID routing, unknown IDs, and acknowledgement success/rejection parsing.
+
+### Remaining verification
+
+The current tests exercise the pure parsing and dispatch logic. They do **not yet** exercise the actual WebSocket exchange with a fake peer, prove notification interleaving against a live socket, or prove timeout behavior under a continuous stream of notifications. Those remain required before treating the transport behavior as fully verified. The branch admission workflow is configured for pull requests and pushes to `main`, not arbitrary feature-branch pushes, so this commit has not automatically run that workflow. No local Rust toolchain/test execution was available through the GitHub editing path; formatting, `cargo test --locked --all-targets`, and the ARMv7 release build remain unverified.
+
+## Scope boundary
 
 This path is **not** a persistent receiver. It only processes notifications when a synchronous operation is already reading the WebSocket. It is a useful, testable improvement compatible with the current SDK, but it does not solve idle-time state freshness or immediate Couch UI updates. Those require the upstream asynchronous SDK and package-event protocol work described above.
