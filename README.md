@@ -118,8 +118,8 @@ Every push to `feature/hdmi-cec-inputs` automatically runs a
 **forced dry-run build** using the canonical package version
 `0.1.0_pre5_git1`. This exercises the ARMv7 build, APK signing, repository
 index generation and feed validation. It uploads the APK and signed preview
-feed as a workflow artifact; it cannot publish to GitHub Pages or create a
-GitHub Release.
+feed as the `webos-package-feed` workflow artifact; it cannot publish to
+GitHub Pages or create a GitHub Release.
 
 After this workflow has been merged into the default branch, use
 **Actions → Build webOS integration package → Run workflow** to dispatch a
@@ -128,8 +128,11 @@ build manually and provide the desired APK-compatible version.
 - Leave **dry_run** enabled to build and validate without publishing. The
   signed APK and preview feed are uploaded as a workflow artifact.
 - Publishing is allowed only for an explicit workflow dispatch from `main`
-  with dry-run disabled. It updates the `gh-pages` branch and creates a
-  GitHub Release for the selected version.
+  with dry-run disabled. A separate, gated publish job downloads the validated
+  artifact, updates the `gh-pages` branch and creates a GitHub Release.
+- The package build job has only `contents: read` permission. Only the gated
+  publish job receives `contents: write`; the weekly feed-renewal job scopes
+  write permission to its main-branch job.
 - The initial publication creates the feed branch if it does not exist.
   Existing feed history is signature-checked, hash-checked and version-checked
   before it is carried forward.
