@@ -45,15 +45,6 @@ fn foreground_title(foreground: &Value) -> Option<String> {
     safe_label(&foreground["appName"]).map(str::to_owned)
 }
 
-/// LG's SSAP getVolume response uses "muted". Accept "mute" as a
-/// compatibility fallback for firmware or response variants that use it.
-fn mute_state(volume: &Value) -> Option<bool> {
-    volume
-        .get("muted")
-        .or_else(|| volume.get("mute"))
-        .and_then(Value::as_bool)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SubscriptionKind {
     AudioStatus,
@@ -86,9 +77,6 @@ fn apply_subscription_payload(kind: SubscriptionKind, payload: &Value, state: &m
                 .filter(|value| *value <= 100)
             {
                 state.volume = Some(volume);
-            }
-            if let Some(muted) = mute_state(normalized) {
-                state.muted = Some(muted);
             }
         }
     }
@@ -589,10 +577,8 @@ impl DeviceClient for WebOsTv {
             Function::VolumeUp => self.simple("ssap://audio/volumeUp"),
             Function::VolumeDown => self.simple("ssap://audio/volumeDown"),
             Function::Mute => {
-                let volume = self.volume()?;
-                let muted = mute_state(&volume)
-                    .or(self.audio_state.muted)
-                    .ok_or(Error::Protocol)?;
+                let _ = self.volume()?;
+                let muted = self.audio_state.muted.ok_or(Error::Protocol)?;
                 self.muted(!muted)
             }
             Function::MuteOn => self.muted(true),
@@ -673,7 +659,7 @@ impl DeviceClient for WebOsTv {
             .and_then(|value| u8::try_from(value).ok())
             .filter(|value| *value <= 100)
             .or(self.audio_state.volume);
-        let muted = mute_state(&volume).or(self.audio_state.muted);
+        let muted = self.audio_state.muted;
         let input = foreground["appId"]
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
@@ -950,21 +936,6 @@ mod tests {
     }
 
     #[test]
-    fn mute_state_reads_ssap_muted_and_legacy_mute_fields() {
-        for (response, expected) in [
-            (json!({"muted": true}), Some(true)),
-            (json!({"muted": false}), Some(false)),
-            (json!({"mute": true}), Some(true)),
-            (json!({"mute": false}), Some(false)),
-            (json!({"muted": true, "mute": false}), Some(true)),
-            (json!({}), None),
-            (json!({"muted": "true"}), None),
-        ] {
-            assert_eq!(mute_state(&response), expected, "{response}");
-        }
-    }
-
-    #[test]
     fn volume_subscription_normalizes_nested_and_legacy_payloads() {
         let mut state = AudioState::default();
         apply_subscription_payload(
@@ -975,7 +946,7 @@ mod tests {
         assert_eq!(
             state,
             AudioState {
-                muted: Some(true),
+                muted: None,
                 volume: Some(37)
             }
         );
@@ -988,7 +959,7 @@ mod tests {
         assert_eq!(
             state,
             AudioState {
-                muted: Some(false),
+                muted: None,
                 volume: Some(42)
             }
         );
@@ -1078,19 +1049,6 @@ mod tests {
         assert!(!subscription_succeeded(
             &json!({"type":"error","payload":{"returnValue":true}})
         ));
-    }
-
-    #[test]
-    fn mute_toggle_inverts_the_reported_state() {
-        for (response, expected) in [
-            (json!({"muted": false}), true),
-            (json!({"muted": true}), false),
-            (json!({"mute": false}), true),
-            (json!({"mute": true}), false),
-        ] {
-            let current = mute_state(&response).expect("fixture has a mute state");
-            assert_eq!(!current, expected, "{response}");
-        }
     }
 
     #[test]
