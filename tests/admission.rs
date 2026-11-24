@@ -206,11 +206,13 @@ fn serve(
                 // Simulate a mute change made outside Couch. The notification
                 // shares the subscription ID and arrives during another request.
                 if let Some(id) = &mute_subscription_id {
-                    socket.send(Message::Text(
-                        json!({"id": id, "type": "response", "payload": {"mute": true}})
-                            .to_string()
-                            .into(),
-                    )).unwrap();
+                    socket
+                        .send(Message::Text(
+                            json!({"id": id, "type": "response", "payload": {"mute": true}})
+                                .to_string()
+                                .into(),
+                        ))
+                        .unwrap();
                 }
                 json!({"returnValue": true})
             }
