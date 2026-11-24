@@ -102,13 +102,13 @@ pub(crate) fn append_children(
                 .unwrap_or(unique_id.as_str());
             let child_identity = identity(child);
 
-            if let Some(identity) = &child_identity {
-                if !seen.insert(identity.clone()) {
+            if let Some(device_identity) = &child_identity {
+                if !seen.insert(device_identity.clone()) {
                     continue;
                 }
                 // A top-level input is the same device only when the TV
                 // exposes matching CEC vendor/physical-address identity.
-                if external_rows.iter().any(|row| identity(row).as_ref() == Some(identity)) {
+                if external_rows.iter().any(|row| identity(row).as_ref() == Some(device_identity)) {
                     continue;
                 }
             }
