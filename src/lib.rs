@@ -457,14 +457,6 @@ impl WebOsTv {
         Ok(())
     }
 
-    fn toggle_mute(&mut self) -> Result<()> {
-        // The subscription keeps this state current, including changes made
-        // with the physical remote or another controller. Drain notifications
-        // already queued on the socket before choosing the inverse state.
-        self.drain_mute_updates()?;
-        let current = self.mute_state.ok_or(Error::Protocol)?;
-        self.muted(!current)
-    }
 }
 
 impl DeviceClient for WebOsTv {
@@ -547,7 +539,9 @@ impl DeviceClient for WebOsTv {
             Function::PowerOff => self.simple("ssap://system/turnOff"),
             Function::VolumeUp => self.simple("ssap://audio/volumeUp"),
             Function::VolumeDown => self.simple("ssap://audio/volumeDown"),
-            Function::Mute => self.toggle_mute(),
+            // The pointer protocol exposes the TV's native MUTE key. This is
+            // a true device-side toggle and avoids guessing from cached state.
+            Function::Mute => self.button("MUTE"),
             Function::MuteOn => self.muted(true),
             Function::MuteOff => self.muted(false),
             Function::Input(id) if Self::supports_input(id) => self.select_input(id),
