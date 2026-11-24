@@ -21,8 +21,8 @@ jq -e '
   (.packages | type == "array" and length > 0) and
   all(.packages[];
     .id == "webos" and .protocol_version == 5 and .min_core_protocol_version == 5 and
-    (.version | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(_pre[0-9]+)?$")) and
-    (.apk | type == "string" and test("^couch-integration-webos-[0-9]+\\.[0-9]+\\.[0-9]+(_pre[0-9]+)?-r0\\.apk$")) and
+    (.version | type == "string" and test("^[0-9]+\\.[0-9]+\\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?$")) and
+    (.apk | type == "string" and test("^couch-integration-webos-[0-9]+\\.[0-9]+\\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?-r0\\.apk$")) and
     (.size | type == "number" and . > 0 and . == floor) and
     (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
   ) and
@@ -34,7 +34,7 @@ OLD_INDEX_SIZE="$(jq -er '.index.size | numbers' "$FEED_JSON")"; OLD_INDEX_SHA25
 INDEX_SIZE="$(stat -c '%s' "$APK_INDEX")"; INDEX_SHA256="$(sha256sum "$APK_INDEX" | awk '{print $1}')"
 [[ "$OLD_INDEX_SIZE" == "$INDEX_SIZE" && "$OLD_INDEX_SHA256" == "$INDEX_SHA256" ]] || { echo 'ERROR: existing feed metadata does not describe current APKINDEX.' >&2; exit 1; }
 while IFS=$'\t' read -r METADATA_VERSION APK_NAME EXPECTED_SIZE EXPECTED_SHA256; do
-  [[ "$APK_NAME" =~ ^couch-integration-webos-[0-9]+\.[0-9]+\.[0-9]+(_pre[0-9]+)?-r0\.apk$ ]] || { echo 'ERROR: feed contains invalid APK filename.' >&2; exit 1; }
+  [[ "$APK_NAME" =~ ^couch-integration-webos-[0-9]+\.[0-9]+\.[0-9]+(_pre[0-9]+)?(_git[0-9]+)?-r0\.apk$ ]] || { echo 'ERROR: feed contains invalid APK filename.' >&2; exit 1; }
   FILENAME_VERSION="${APK_NAME#couch-integration-webos-}"; FILENAME_VERSION="${FILENAME_VERSION%-r0.apk}"
   [[ "$METADATA_VERSION" == "$FILENAME_VERSION" ]] || { echo "ERROR: metadata version does not match APK filename: $APK_NAME" >&2; exit 1; }
   APK_PATH="$FEED_DIR/$APK_NAME"; [[ -s "$APK_PATH" ]] || { printf 'ERROR: published APK is missing: %s\n' "$APK_NAME" >&2; exit 1; }
