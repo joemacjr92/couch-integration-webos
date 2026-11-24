@@ -358,6 +358,39 @@ jobs:
           name: webos-package-feed
           path: package-artifact
 
+      - name: Verify downloaded publication artifact
+        shell: bash
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          ROOT="package-artifact/repository"
+          FEED="$ROOT/preview/armv7"
+          APK_NAME="couch-integration-webos-$VERSION-r0.apk"
+          APK="package-artifact/integrations/$APK_NAME"
+          test -f "$ROOT/.nojekyll"
+          test -s "$FEED/APKINDEX.tar.gz"
+          test -s "$FEED/feed.json"
+          test -s "$FEED/feed.json.sig"
+          test -s "$FEED/$APK_NAME"
+          test -s "$APK"
+          jq -e --arg version "$VERSION" --arg apk "$APK_NAME" '
+            .schema == 1 and .channel == "preview" and
+            .index.path == "APKINDEX.tar.gz" and
+            any(.packages[]; .id == "webos" and .version == $version and .apk == $apk)
+          ' "$FEED/feed.json" >/dev/null
+          openssl dgst -sha256 -verify keys/webos-repository-public.pem \
+            -signature "$FEED/feed.json.sig" "$FEED/feed.json"
+          INDEX_SHA256="$(jq -er '.index.sha256' "$FEED/feed.json")"
+          INDEX_SIZE="$(jq -er '.index.size' "$FEED/feed.json")"
+          test "$(sha256sum "$FEED/APKINDEX.tar.gz" | cut -d ' ' -f 1)" = "$INDEX_SHA256"
+          test "$(stat -c '%s' "$FEED/APKINDEX.tar.gz")" = "$INDEX_SIZE"
+          APK_SHA256="$(jq -er --arg version "$VERSION" '.packages[] | select(.id == "webos" and .version == $version) | .sha256' "$FEED/feed.json")"
+          APK_SIZE="$(jq -er --arg version "$VERSION" '.packages[] | select(.id == "webos" and .version == $version) | .size' "$FEED/feed.json")"
+          test "$(sha256sum "$APK" | cut -d ' ' -f 1)" = "$APK_SHA256"
+          test "$(stat -c '%s' "$APK")" = "$APK_SIZE"
+          cmp "$APK" "$FEED/$APK_NAME"
+
       - name: Publish package feed to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
