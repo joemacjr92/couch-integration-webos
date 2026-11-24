@@ -30,6 +30,8 @@ sign_feed() { openssl dgst -sha256 -sign "$WORK/private.pem" -out "$WORK/feed/fe
 run_ok() { bash "$VALIDATOR" "$WORK/feed" "$WORK/public.pem" "$1" "${@:2}" >/dev/null || fail "expected success for $1"; }
 run_bad() { if bash "$VALIDATOR" "$WORK/feed" "$WORK/public.pem" "$1" "${@:2}" >/dev/null 2>&1; then fail "expected rejection for $1"; fi; }
 make_fixture; run_ok 0.1.0_pre6; pass "valid signed prerelease feed and newer prerelease"
+run_ok 0.1.0_pre5_git1; pass "fork build version sorts after its upstream prerelease"
+run_bad 0.1.0_pre5.fork1; pass "non-APK .fork version syntax rejected"
 run_ok 0.1.0_pre5 --allow-existing-version; pass "existing version allowed only for explicit dry run"
 run_bad 0.1.0_pre5; pass "existing version rejected for publication"
 run_bad 0.1.0_pre4; pass "older prerelease rejected"
@@ -52,6 +54,17 @@ openssl dgst -sha256 -verify "$WORK/public.pem" -signature "$WORK/feed/feed.json
 [[ "$(sha256sum "$WORK/feed/APKINDEX.tar.gz" | awk '{print $1}')" == "$INDEX_BEFORE" ]] || fail "renewal changed APKINDEX"
 [[ "$(sha256sum "$WORK/feed/couch-integration-webos-0.1.0_pre5-r0.apk" | awk '{print $1}')" == "$APK_BEFORE" ]] || fail "renewal changed published APK"
 pass "metadata renewal increments sequence, re-signs metadata, and preserves packages"
+
+# Fork suffixes must remain valid in both metadata and APK filenames during renewal.
+make_fixture
+mv "$WORK/feed/couch-integration-webos-0.1.0_pre5-r0.apk" "$WORK/feed/couch-integration-webos-0.1.0_pre5_git1-r0.apk"
+jq '.packages[0].version = "0.1.0_pre5_git1" |
+    .packages[0].apk = "couch-integration-webos-0.1.0_pre5_git1-r0.apk"' \
+  "$WORK/feed/feed.json" > "$WORK/feed/modified.json"
+mv "$WORK/feed/modified.json" "$WORK/feed/feed.json"
+sign_feed
+bash "$RENEWER" "$WORK/feed" "$WORK/private.pem" "$WORK/public.pem" >/dev/null || fail "renewal rejected valid fork package version"
+pass "metadata renewal accepts APK-compatible fork suffix in metadata and filename"
 
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/wrong-private.pem" >/dev/null 2>&1
 make_fixture
