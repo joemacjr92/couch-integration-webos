@@ -292,6 +292,7 @@ jobs:
           openssl dgst -sha256 -verify "$RUNNER_TEMP/apk-keys/developer.rsa.pub" -signature "$REPO_ARCH/feed.json.sig" "$REPO_ARCH/feed.json"
           bash "$PLUGIN/tools/validate-feed-history.sh" "$REPO_ARCH" "$PLUGIN/keys/webos-repository-public.pem" "$VERSION" --allow-existing-version
           sha256sum "$INDEX" "$REPO_ARCH/feed.json" "$REPO_ARCH/feed.json.sig"
+          touch "$PLUGIN/build/repository/.nojekyll"
 
       - name: Upload dry-run package and feed
         if: inputs.dry_run == true
