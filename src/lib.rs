@@ -45,15 +45,6 @@ fn foreground_title(foreground: &Value) -> Option<String> {
     safe_label(&foreground["appName"]).map(str::to_owned)
 }
 
-/// LG's SSAP getVolume response uses "muted". Accept "mute" as a
-/// compatibility fallback for firmware or response variants that use it.
-fn mute_state(volume: &Value) -> Option<bool> {
-    volume
-        .get("muted")
-        .or_else(|| volume.get("mute"))
-        .and_then(Value::as_bool)
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub url: String,
@@ -463,7 +454,11 @@ impl DeviceClient for WebOsTv {
             Function::VolumeUp => self.simple("ssap://audio/volumeUp"),
             Function::VolumeDown => self.simple("ssap://audio/volumeDown"),
             Function::Mute => {
-                let muted = mute_state(&self.volume()?).ok_or(Error::Protocol)?;
+                let muted = self
+                    .volume()?
+                    .get("mute")
+                    .and_then(Value::as_bool)
+                    .ok_or(Error::Protocol)?;
                 self.muted(!muted)
             }
             Function::MuteOn => self.muted(true),
@@ -543,7 +538,7 @@ impl DeviceClient for WebOsTv {
             .as_u64()
             .and_then(|value| u8::try_from(value).ok())
             .filter(|value| *value <= 100);
-        let muted = mute_state(&volume);
+        let muted = volume["mute"].as_bool();
         let input = foreground["appId"]
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
@@ -817,34 +812,6 @@ mod tests {
         );
         assert_eq!(foreground_title(&json!({"appId":"netflix"})), None);
         assert_eq!(foreground_title(&json!({"appName":"Bad\nname"})), None);
-    }
-
-    #[test]
-    fn mute_state_reads_ssap_muted_and_legacy_mute_fields() {
-        for (response, expected) in [
-            (json!({"muted": true}), Some(true)),
-            (json!({"muted": false}), Some(false)),
-            (json!({"mute": true}), Some(true)),
-            (json!({"mute": false}), Some(false)),
-            (json!({"muted": true, "mute": false}), Some(true)),
-            (json!({}), None),
-            (json!({"muted": "true"}), None),
-        ] {
-            assert_eq!(mute_state(&response), expected, "{response}");
-        }
-    }
-
-    #[test]
-    fn mute_toggle_inverts_the_reported_state() {
-        for (response, expected) in [
-            (json!({"muted": false}), true),
-            (json!({"muted": true}), false),
-            (json!({"mute": false}), true),
-            (json!({"mute": true}), false),
-        ] {
-            let current = mute_state(&response).expect("fixture has a mute state");
-            assert_eq!(!current, expected, "{response}");
-        }
     }
 
     #[test]
