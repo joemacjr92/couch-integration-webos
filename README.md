@@ -22,6 +22,15 @@ the television. That release remained compatible with protocol-3 cores, which
 kept the generic package screen until the core was updated. `0.1.0_pre5`
 requires protocol 5 because app discovery is a new host/package exchange.
 
+Fork builds use an APK-compatible version suffix so they sort after the matching
+upstream prerelease without colliding with its package identity. For example,
+the fork build based on upstream `0.1.0_pre5` is packaged as
+`0.1.0_pre5_git1`. Use this exact canonical version in the workflow input,
+plugin manifest, APK filename, feed metadata and GitHub Release tag
+(`v0.1.0_pre5_git1`). Do not use a dotted label such as
+`0.1.0_pre5.fork1` as the package version; it is not valid Alpine APK
+version syntax.
+
 The package is intentionally preview-only. Network power-on remains outside the
 current package boundary because it needs a host-learned Wake-on-LAN address or
 the remote's privileged infrared device. This package therefore offers network
@@ -106,7 +115,8 @@ The committed public-key SHA-256 fingerprint is `499b0a9cfa8de88136f1f608221543e
 ### Building and publishing
 
 Use **Actions → Build webOS integration package → Run workflow** and provide a
-package version such as `0.1.0_pre5`.
+package version such as `0.1.0_pre5_git1` for the first fork build based on
+upstream `0.1.0_pre5`.
 
 - Leave **dry_run** enabled to build and validate without publishing. The
   signed APK and preview feed are uploaded as a workflow artifact.
