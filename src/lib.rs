@@ -45,19 +45,13 @@ fn foreground_title(foreground: &Value) -> Option<String> {
     safe_label(&foreground["appName"]).map(str::to_owned)
 }
 
-/// LG's SSAP getVolume response uses "muted". Accept "mute" as a
-/// compatibility fallback for firmware or response variants that use it.
-fn mute_state(volume: &Value) -> Option<bool> {
-    volume
-        .get("muted")
-        .or_else(|| volume.get("mute"))
+/// LG reports mute state through audio/getStatus (field: "mute").
+/// Accept "muted" as a compatibility fallback for response variants.
+fn mute_state(audio_status: &Value) -> Option<bool> {
+    audio_status
+        .get("mute")
+        .or_else(|| audio_status.get("muted"))
         .and_then(Value::as_bool)
-}
-
-/// Prefer the last state reported by the TV; use a fresh observation only
-/// when no state has been cached yet.
-fn next_mute_state(cached: Option<bool>, observed: Option<bool>) -> Option<bool> {
-    cached.or(observed).map(|muted| !muted)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -387,6 +381,10 @@ impl WebOsTv {
         self.request("ssap://audio/getVolume", json!({}))
     }
 
+    fn audio_status(&mut self) -> Result<Value> {
+        self.request("ssap://audio/getStatus", json!({}))
+    }
+
     fn muted(&mut self, on: bool) -> Result<()> {
         self.request("ssap://audio/setMute", json!({"mute": on}))?;
         self.mute_state = Some(on);
@@ -394,13 +392,10 @@ impl WebOsTv {
     }
 
     fn toggle_mute(&mut self) -> Result<()> {
-        let observed = if self.mute_state.is_none() {
-            Some(mute_state(&self.volume()?).ok_or(Error::Protocol)?)
-        } else {
-            None
-        };
-        let next = next_mute_state(self.mute_state, observed).ok_or(Error::Protocol)?;
-        self.muted(next)
+        // Always read the current TV state. A cached value can be stale when
+        // mute is changed by the TV remote or another controller.
+        let current = mute_state(&self.audio_status()?).ok_or(Error::Protocol)?;
+        self.muted(!current)
     }
 }
 
@@ -532,6 +527,7 @@ impl DeviceClient for WebOsTv {
             )
             .map_err(SdkError::from)?;
         let volume = self.volume().map_err(SdkError::from)?;
+        let audio_status = self.audio_status().map_err(SdkError::from)?;
         let foreground = self
             .request(
                 "ssap://com.webos.applicationManager/getForegroundAppInfo",
@@ -559,7 +555,7 @@ impl DeviceClient for WebOsTv {
             .as_u64()
             .and_then(|value| u8::try_from(value).ok())
             .filter(|value| *value <= 100);
-        let muted = mute_state(&volume);
+        let muted = mute_state(&audio_status);
         if let Some(muted) = muted {
             self.mute_state = Some(muted);
         }
@@ -839,30 +835,17 @@ mod tests {
     }
 
     #[test]
-    fn mute_state_reads_ssap_muted_and_legacy_mute_fields() {
+    fn mute_state_reads_audio_status_mute_and_compatibility_field() {
         for (response, expected) in [
-            (json!({"muted": true}), Some(true)),
-            (json!({"muted": false}), Some(false)),
             (json!({"mute": true}), Some(true)),
             (json!({"mute": false}), Some(false)),
-            (json!({"muted": true, "mute": false}), Some(true)),
+            (json!({"muted": true}), Some(true)),
+            (json!({"muted": false}), Some(false)),
+            (json!({"mute": false, "muted": true}), Some(false)),
             (json!({}), None),
-            (json!({"muted": "true"}), None),
+            (json!({"mute": "true"}), None),
         ] {
             assert_eq!(mute_state(&response), expected, "{response}");
-        }
-    }
-
-    #[test]
-    fn mute_toggle_prefers_cached_state_and_falls_back_to_observed_state() {
-        for (cached, observed, expected) in [
-            (Some(false), Some(true), Some(true)),
-            (Some(true), Some(false), Some(false)),
-            (None, Some(false), Some(true)),
-            (None, Some(true), Some(false)),
-            (None, None, None),
-        ] {
-            assert_eq!(next_mute_state(cached, observed), expected);
         }
     }
 
