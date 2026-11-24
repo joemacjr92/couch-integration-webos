@@ -185,13 +185,39 @@ fn serve(
                 .into(),
         ))
         .unwrap();
+    let mut mute_subscription_id: Option<Value> = None;
     while let Some(request) = receive(&mut socket) {
         let Some(uri) = request["uri"].as_str() else {
             continue;
         };
-        log.lock().unwrap().push(uri.into());
+        if uri == "ssap://audio/setMute" {
+            log.lock().unwrap().push(format!(
+                "{uri}:{}",
+                request["payload"]["mute"].as_bool().unwrap_or(false)
+            ));
+        } else {
+            log.lock().unwrap().push(uri.into());
+        }
+        if request["type"] == "subscribe" && uri == "ssap://audio/getStatus" {
+            mute_subscription_id = Some(request["id"].clone());
+        }
         let payload = match uri {
-            "ssap://audio/volumeUp" => json!({"returnValue": true}),
+            "ssap://audio/volumeUp" => {
+                // Simulate a mute change made outside Couch. The notification
+                // shares the subscription ID and arrives during another request.
+                if let Some(id) = &mute_subscription_id {
+                    socket
+                        .send(Message::Text(
+                            json!({"id": id, "type": "response", "payload": {"mute": true}})
+                                .to_string()
+                                .into(),
+                        ))
+                        .unwrap();
+                }
+                json!({"returnValue": true})
+            }
+            "ssap://audio/setMute" => json!({"returnValue": true}),
+            "ssap://audio/getStatus" => json!({"returnValue": true, "mute": false}),
             "ssap://com.webos.service.networkinput/getPointerInputSocket" => json!({
                 "returnValue": true,
                 "socketPath": format!("ws://{address}/resources/pointer?token=fixture")
@@ -200,7 +226,10 @@ fn serve(
                 json!({"returnValue": true, "state": "Active"})
             }
             "ssap://audio/getVolume" => {
-                json!({"returnValue": true, "volume": 37, "mute": false})
+                json!({"returnValue": true, "volume": 37})
+            }
+            "ssap://audio/getStatus" => {
+                json!({"returnValue": true, "mute": false})
             }
             "ssap://com.webos.applicationManager/getForegroundAppInfo" => {
                 json!({"returnValue": true, "appId": "HDMI_1", "appName": "Game console"})
@@ -260,12 +289,16 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
     host.configure_with(tv.settings(), Some(&credential))
         .unwrap();
     host.command("volume-up").unwrap();
+    // Toggle is delegated to the TV's native MUTE key over the pointer socket;
+    // it must not depend on a cached mute-state read.
+    host.command("mute").unwrap();
     host.command("up").unwrap();
     tv.wait_for("pointer:UP");
+    tv.wait_for("pointer:MUTE");
     let status = host.status().unwrap();
     assert_eq!(status.on, Some(true));
     assert_eq!(status.volume, Some(37));
-    assert_eq!(status.muted, Some(false));
+    assert_eq!(status.muted, Some(true));
     assert_eq!(status.input.as_deref(), Some("HDMI_1"));
     assert_eq!(status.sound_output.as_deref(), Some("external_arc"));
     assert_eq!(status.picture_mode.as_deref(), Some("cinema"));
@@ -283,8 +316,10 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
         [
             "register",
             "register",
+            "ssap://audio/getStatus",
             "ssap://audio/volumeUp",
             "ssap://com.webos.service.networkinput/getPointerInputSocket",
+            "pointer:MUTE",
             "pointer:UP",
             "ssap://com.webos.service.tvpower/power/getPowerState",
             "ssap://audio/getVolume",

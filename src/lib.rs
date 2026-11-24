@@ -45,12 +45,12 @@ fn foreground_title(foreground: &Value) -> Option<String> {
     safe_label(&foreground["appName"]).map(str::to_owned)
 }
 
-/// LG's SSAP getVolume response uses "muted". Accept "mute" as a
-/// compatibility fallback for firmware or response variants that use it.
-fn mute_state(volume: &Value) -> Option<bool> {
-    volume
-        .get("muted")
-        .or_else(|| volume.get("mute"))
+/// LG reports mute state through audio/getStatus (field: "mute").
+/// Accept "muted" as a compatibility fallback for response variants.
+fn mute_state(audio_status: &Value) -> Option<bool> {
+    audio_status
+        .get("mute")
+        .or_else(|| audio_status.get("muted"))
         .and_then(Value::as_bool)
 }
 
@@ -280,6 +280,8 @@ pub struct WebOsTv {
     url: String,
     pin: Arc<Mutex<Vec<u8>>>,
     next: u64,
+    mute_state: Option<bool>,
+    mute_subscription_id: Option<String>,
     cec_selections: HashMap<String, cec::CecSelection>,
 }
 
@@ -297,6 +299,14 @@ impl WebOsTv {
         let until = Instant::now() + IO_TIMEOUT;
         loop {
             let value = read(&mut self.socket, until)?;
+            if self
+                .mute_subscription_id
+                .as_deref()
+                .is_some_and(|subscription_id| value["id"] == subscription_id)
+            {
+                self.update_mute_subscription(&value);
+                continue;
+            }
             if value["id"] != id {
                 continue;
             }
@@ -307,6 +317,46 @@ impl WebOsTv {
                 return Err(Error::Protocol);
             }
             return Ok(value["payload"].clone());
+        }
+    }
+
+    /// Subscribe using the same SSAP subscription flow as Home Assistant.
+    /// The TV reuses this request ID for subsequent mute-state notifications.
+    fn subscribe_audio_status(&mut self) -> Result<()> {
+        self.next += 1;
+        let id = format!("couch-{}", self.next);
+        send(
+            &mut self.socket,
+            json!({
+                "id": id,
+                "type": "subscribe",
+                "uri": "ssap://audio/getStatus",
+                "payload": {}
+            }),
+        )?;
+
+        let until = Instant::now() + IO_TIMEOUT;
+        loop {
+            let value = read(&mut self.socket, until)?;
+            if value["id"] != id {
+                continue;
+            }
+            if value["type"] == "error" || value["payload"]["returnValue"] == false {
+                return Err(Error::Rejected);
+            }
+            if value["type"] != "response" {
+                return Err(Error::Protocol);
+            }
+            self.update_mute_subscription(&value);
+            self.mute_subscription_id = Some(id);
+            return Ok(());
+        }
+    }
+
+    /// Apply an initial subscription response or a later update notification.
+    fn update_mute_subscription(&mut self, message: &Value) {
+        if let Some(muted) = mute_state(&message["payload"]) {
+            self.mute_state = Some(muted);
         }
     }
 
@@ -381,8 +431,9 @@ impl WebOsTv {
     }
 
     fn muted(&mut self, on: bool) -> Result<()> {
-        self.request("ssap://audio/setMute", json!({"mute": on}))
-            .map(|_| ())
+        self.request("ssap://audio/setMute", json!({"mute": on}))?;
+        self.mute_state = Some(on);
+        Ok(())
     }
 }
 
@@ -439,14 +490,24 @@ impl DeviceClient for WebOsTv {
         let mut socket =
             connect_socket(&settings.url, pin.clone(), IO_TIMEOUT).map_err(SdkError::from)?;
         registered(&mut socket, &credential.key).map_err(SdkError::from)?;
-        Ok(Self {
+        let mut client = Self {
             socket,
             pointer: None,
             url: settings.url.clone(),
             pin,
             next: 0,
+            mute_state: None,
+            mute_subscription_id: None,
             cec_selections: HashMap::new(),
-        })
+        };
+        // Mute Toggle uses the TV's native pointer MUTE key and does not
+        // depend on this subscription. Treat audio-status subscription as
+        // optional so an unsupported or malformed status response cannot
+        // prevent the TV's other controls from connecting.
+        if client.subscribe_audio_status().is_err() {
+            client.mute_subscription_id = None;
+        }
+        Ok(client)
     }
 
     fn pair_start(
@@ -462,10 +523,9 @@ impl DeviceClient for WebOsTv {
             Function::PowerOff => self.simple("ssap://system/turnOff"),
             Function::VolumeUp => self.simple("ssap://audio/volumeUp"),
             Function::VolumeDown => self.simple("ssap://audio/volumeDown"),
-            Function::Mute => {
-                let muted = mute_state(&self.volume()?).ok_or(Error::Protocol)?;
-                self.muted(!muted)
-            }
+            // The pointer protocol exposes the TV's native MUTE key. This is
+            // a true device-side toggle and avoids guessing from cached state.
+            Function::Mute => self.button("MUTE"),
             Function::MuteOn => self.muted(true),
             Function::MuteOff => self.muted(false),
             Function::Input(id) if Self::supports_input(id) => self.select_input(id),
@@ -543,7 +603,7 @@ impl DeviceClient for WebOsTv {
             .as_u64()
             .and_then(|value| u8::try_from(value).ok())
             .filter(|value| *value <= 100);
-        let muted = mute_state(&volume);
+        let muted = self.mute_state;
         let input = foreground["appId"]
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
@@ -820,30 +880,17 @@ mod tests {
     }
 
     #[test]
-    fn mute_state_reads_ssap_muted_and_legacy_mute_fields() {
+    fn mute_state_reads_audio_status_mute_and_compatibility_field() {
         for (response, expected) in [
-            (json!({"muted": true}), Some(true)),
-            (json!({"muted": false}), Some(false)),
             (json!({"mute": true}), Some(true)),
             (json!({"mute": false}), Some(false)),
-            (json!({"muted": true, "mute": false}), Some(true)),
+            (json!({"muted": true}), Some(true)),
+            (json!({"muted": false}), Some(false)),
+            (json!({"mute": false, "muted": true}), Some(false)),
             (json!({}), None),
-            (json!({"muted": "true"}), None),
+            (json!({"mute": "true"}), None),
         ] {
             assert_eq!(mute_state(&response), expected, "{response}");
-        }
-    }
-
-    #[test]
-    fn mute_toggle_inverts_the_reported_state() {
-        for (response, expected) in [
-            (json!({"muted": false}), true),
-            (json!({"muted": true}), false),
-            (json!({"mute": false}), true),
-            (json!({"mute": true}), false),
-        ] {
-            let current = mute_state(&response).expect("fixture has a mute state");
-            assert_eq!(!current, expected, "{response}");
         }
     }
 
