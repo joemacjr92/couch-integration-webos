@@ -145,14 +145,21 @@ jobs:
             .protocol_version == 5 and .min_core_protocol_version == 5
           ' "$PLUGIN/plugin.json" >/dev/null
 
-      - name: Run package admission handshake tests
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path "$GITHUB_WORKSPACE/couch-integration-webos/Cargo.toml" -- --check
+
+      - name: Run Rust test suite
         shell: bash
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/couch-sdk-reference/clients"
-          cargo test --locked \
-            --manifest-path "$GITHUB_WORKSPACE/couch-integration-webos/Cargo.toml" \
-            --test admission -- --ignored
+          # Cargo's default behavior skips #[ignore] tests, including the
+          # intentionally long-running shared pairing scenario.
+          cargo test --locked --all-targets \
+            --manifest-path "$GITHUB_WORKSPACE/couch-integration-webos/Cargo.toml"
 
       - name: Build static ARMv7 plugin
         shell: bash
