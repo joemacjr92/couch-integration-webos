@@ -590,7 +590,9 @@ impl DeviceClient for WebOsTv {
             Function::VolumeDown => self.simple("ssap://audio/volumeDown"),
             Function::Mute => {
                 let volume = self.volume()?;
-                let muted = mute_state(&volume).or(self.audio_state.muted).ok_or(Error::Protocol)?;
+                let muted = mute_state(&volume)
+                    .or(self.audio_state.muted)
+                    .ok_or(Error::Protocol)?;
                 self.muted(!muted)
             }
             Function::MuteOn => self.muted(true),
@@ -970,19 +972,34 @@ mod tests {
             &json!({"volumeStatus":{"volume":37,"muted":true}}),
             &mut state,
         );
-        assert_eq!(state, AudioState { muted: Some(true), volume: Some(37) });
+        assert_eq!(
+            state,
+            AudioState {
+                muted: Some(true),
+                volume: Some(37)
+            }
+        );
 
         apply_subscription_payload(
             SubscriptionKind::Volume,
             &json!({"volume":42,"mute":false}),
             &mut state,
         );
-        assert_eq!(state, AudioState { muted: Some(false), volume: Some(42) });
+        assert_eq!(
+            state,
+            AudioState {
+                muted: Some(false),
+                volume: Some(42)
+            }
+        );
     }
 
     #[test]
     fn audio_status_subscription_preserves_explicit_false_and_ignores_malformed_values() {
-        let mut state = AudioState { muted: Some(true), volume: Some(25) };
+        let mut state = AudioState {
+            muted: Some(true),
+            volume: Some(25),
+        };
         apply_subscription_payload(
             SubscriptionKind::AudioStatus,
             &json!({"mute":false}),
@@ -1025,7 +1042,13 @@ mod tests {
             &subscriptions,
             &mut state,
         ));
-        assert_eq!(state, AudioState { muted: Some(false), volume: Some(61) });
+        assert_eq!(
+            state,
+            AudioState {
+                muted: Some(false),
+                volume: Some(61)
+            }
+        );
 
         assert!(!route_subscription_message(
             &json!({"id":"unrelated","type":"response","payload":{"mute":true}}),
