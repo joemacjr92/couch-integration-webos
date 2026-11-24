@@ -114,13 +114,20 @@ The committed public-key SHA-256 fingerprint is `499b0a9cfa8de88136f1f608221543e
 
 ### Building and publishing
 
-Use **Actions → Build webOS integration package → Run workflow** and provide a
-package version such as `0.1.0_pre5_git1` for the first fork build based on
-upstream `0.1.0_pre5`.
+Every push to `feature/hdmi-cec-inputs` automatically runs a
+**forced dry-run build** using the canonical package version
+`0.1.0_pre5_git1`. This exercises the ARMv7 build, APK signing, repository
+index generation and feed validation. It uploads the APK and signed preview
+feed as a workflow artifact; it cannot publish to GitHub Pages or create a
+GitHub Release.
+
+After this workflow has been merged into the default branch, use
+**Actions → Build webOS integration package → Run workflow** to dispatch a
+build manually and provide the desired APK-compatible version.
 
 - Leave **dry_run** enabled to build and validate without publishing. The
   signed APK and preview feed are uploaded as a workflow artifact.
-- Publishing is allowed only when the workflow is dispatched from `main`
+- Publishing is allowed only for an explicit workflow dispatch from `main`
   with dry-run disabled. It updates the `gh-pages` branch and creates a
   GitHub Release for the selected version.
 - The initial publication creates the feed branch if it does not exist.
