@@ -54,8 +54,11 @@ response, `id` identifies the physical input (for example, `HDMI_2`), while
 The parser also accepts the alternate `inputId` field when present.
 
 CEC descendants are flattened into the existing Couch input selector and
-labelled with their parent context (for example, `p3i · HDMI 2`). The
-top-level input list is retained unchanged. A depth-one CEC entry whose
+labelled with their parent input's current display name (for example,
+`Blu-ray - p3i`). If multiple physical inputs share the same display name,
+the HDMI port is included to keep their descendants distinguishable. When a
+friendly parent name is unavailable, the HDMI port label is used as a fallback.
+The top-level input list is retained unchanged. A depth-one CEC entry whose
 TV-reported name already appears in the top-level input list is not added a
 second time; this comparison is based on the current TV probe, not a
 hardcoded device or brand name. Where CEC vendor ID and physical address are
