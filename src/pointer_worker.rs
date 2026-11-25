@@ -1,9 +1,9 @@
-//! Test-only prototype for a continuously serviced pointer WebSocket.
+//! Dedicated owner for the continuously serviced LG pointer WebSocket.
 //!
-//! This deliberately does not integrate with the WebOsTv client yet. It proves
-//! that the exact socket type used by the integration can be moved to one
-//! owner thread, serviced while idle, and driven through a bounded command
-//! channel.
+//! The worker owns only the pointer socket. The calling thread retains the
+//! Couch DeviceClient and its SSAP connection, and sends bounded button
+//! commands to this worker. A command whose send outcome is uncertain is
+//! never replayed.
 
 use crate::Socket;
 use std::{
@@ -34,7 +34,7 @@ impl SetReadTimeout for Socket {
 enum WorkerError {
     InvalidButton,
     Busy,
-    Stopped,
+    StoppedBeforeSend,
     Transport,
 }
 
@@ -71,6 +71,10 @@ impl PointerWorker {
         })
     }
 
+    fn is_finished(&self) -> bool {
+        self.thread.as_ref().map(|worker| worker.is_finished()).unwrap_or(true)
+    }
+
     fn button(&self, name: &str) -> Result<(), WorkerError> {
         if name.is_empty()
             || name.len() > 32
@@ -81,6 +85,10 @@ impl PointerWorker {
             return Err(WorkerError::InvalidButton);
         }
 
+        if self.is_finished() {
+            return Err(WorkerError::StoppedBeforeSend);
+        }
+
         let (reply, result) = mpsc::sync_channel(1);
         self.commands
             .try_send(Command::Button {
@@ -89,14 +97,19 @@ impl PointerWorker {
             })
             .map_err(|error| match error {
                 TrySendError::Full(_) => WorkerError::Busy,
-                TrySendError::Disconnected(_) => WorkerError::Stopped,
+                TrySendError::Disconnected(_) => WorkerError::StoppedBeforeSend,
             })?;
 
-        result.recv().unwrap_or(Err(WorkerError::Stopped))
+        result.recv().unwrap_or(Err(WorkerError::Transport))
     }
 
     fn shutdown(&mut self) {
-        let _ = self.commands.send(Command::Shutdown);
+        match self.commands.try_send(Command::Shutdown) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Full(command)) => {
+                let _ = self.commands.send(command);
+            }
+        }
         if let Some(worker) = self.thread.take() {
             let _ = worker.join();
         }
@@ -110,6 +123,7 @@ impl Drop for PointerWorker {
 }
 
 fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
+    crate::pointer_diagnostics::record("pointer worker started");
     loop {
         match commands.try_recv() {
             Ok(Command::Button { name, reply }) => {
@@ -119,6 +133,10 @@ fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
                     .map(|()| ())
                     .map_err(|_| WorkerError::Transport);
                 let failed = result.is_err();
+                crate::pointer_diagnostics::record(&format!(
+                    "pointer worker button send {} name={name}",
+                    if failed { "failed" } else { "succeeded" }
+                ));
                 let _ = reply.send(result);
                 if failed {
                     // A failed send has uncertain delivery. Exit; never replay.
@@ -126,6 +144,7 @@ fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
                 }
             }
             Ok(Command::Shutdown) | Err(TryRecvError::Disconnected) => {
+                crate::pointer_diagnostics::record("pointer worker shutdown requested");
                 let _ = socket.close(None);
                 let _ = socket.flush();
                 break;
@@ -136,13 +155,16 @@ fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
         match socket.read() {
             Ok(Message::Ping(_)) => {
                 // tungstenite queues the automatic Pong when Ping is read.
+                crate::pointer_diagnostics::record("pointer worker received peer Ping");
                 if socket.flush().is_err() {
+                    crate::pointer_diagnostics::record("pointer worker failed to flush Pong");
                     break;
                 }
             }
             Ok(Message::Pong(_)) => {}
             Ok(Message::Close(_)) => {
                 // Reading Close queues the close response; flush it before exit.
+                crate::pointer_diagnostics::record("pointer worker received peer Close");
                 let _ = socket.flush();
                 break;
             }
@@ -155,10 +177,17 @@ fn run(mut socket: WebSocket<Socket>, commands: Receiver<Command>) {
                     error.kind(),
                     io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
                 ) => {}
-            Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => break,
-            Err(_) => break,
+            Err(WsError::ConnectionClosed | WsError::AlreadyClosed) => {
+                crate::pointer_diagnostics::record("pointer worker observed closed transport");
+                break;
+            }
+            Err(_) => {
+                crate::pointer_diagnostics::record("pointer worker observed transport error");
+                break;
+            }
         }
     }
+    crate::pointer_diagnostics::record("pointer worker stopped");
 }
 
 // Compile-time proof for the exact production socket type, including TLS.
@@ -253,7 +282,7 @@ mod tests {
         assert!(matches!(server.read().unwrap(), Message::Close(_)));
 
         // The worker has processed the close handshake before the response.
-        assert_eq!(worker.button("ENTER"), Err(WorkerError::Stopped));
+        assert_eq!(worker.button("ENTER"), Err(WorkerError::StoppedBeforeSend));
     }
 
     #[test]
@@ -264,7 +293,7 @@ mod tests {
         server.get_ref().shutdown(Shutdown::Both).unwrap();
         thread::sleep(READ_POLL + Duration::from_millis(25));
 
-        assert_eq!(worker.button("ENTER"), Err(WorkerError::Stopped));
+        assert_eq!(worker.button("ENTER"), Err(WorkerError::StoppedBeforeSend));
     }
 
     #[test]
