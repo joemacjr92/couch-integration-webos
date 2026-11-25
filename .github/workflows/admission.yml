@@ -3,7 +3,7 @@ name: Client admission
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, investigation/pointer-websocket-reliability]
   workflow_dispatch:
     inputs:
       run_armv7_build:

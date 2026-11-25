@@ -23,6 +23,8 @@ use tungstenite::{Message, WebSocket};
 use url::Url;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(4);
+const POINTER_PROBE_AFTER: Duration = Duration::from_secs(5);
+const POINTER_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 const PAIR_BUDGET: Duration = Duration::from_secs(85);
 const PAIR_POLL_MS: u32 = 1500;
@@ -281,6 +283,52 @@ fn read(socket: &mut WebSocket<Socket>, until: Instant) -> Result<Value> {
     }
 }
 
+/// Verify an idle pointer WebSocket before sending a one-way button frame.
+///
+/// Reading is important here: tungstenite queues automatic Pong/Close replies
+/// only after it reads those frames. A matching Pong or a TV-initiated Ping
+/// confirms a live peer; a timeout or close means the caller should drop it
+/// and negotiate a fresh pointer socket before sending the user's command.
+fn pointer_probe(pointer: &mut WebSocket<Socket>, nonce: u64, timeout: Duration) -> Result<()> {
+    let payload = format!("couch-pointer-{nonce}").into_bytes();
+    pointer
+        .get_ref()
+        .timeout(timeout)
+        .map_err(|_| Error::Transport)?;
+    pointer
+        .send(Message::Ping(payload.clone().into()))
+        .map_err(|_| Error::Transport)?;
+
+    let until = Instant::now() + timeout;
+    loop {
+        let left = until
+            .checked_duration_since(Instant::now())
+            .ok_or(Error::Timeout)?;
+        pointer
+            .get_ref()
+            .timeout(left)
+            .map_err(|_| Error::Transport)?;
+        match pointer.read() {
+            Ok(Message::Pong(reply)) if reply.as_ref() == payload.as_slice() => return Ok(()),
+            // A TV-initiated Ping is itself proof that the peer is alive. The
+            // read queued its automatic Pong; flush it before sending the key.
+            Ok(Message::Ping(_)) => return pointer.flush().map_err(|_| Error::Transport),
+            Ok(Message::Pong(_)) => {}
+            Ok(Message::Close(_)) => return Err(Error::Transport),
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(Error::Timeout)
+            }
+            Err(_) => return Err(Error::Transport),
+        }
+    }
+}
+
 fn registered(socket: &mut WebSocket<Socket>, key: &str) -> Result<()> {
     send(socket, registration(Some(key)))?;
     let until = Instant::now() + REGISTER_TIMEOUT;
@@ -336,6 +384,7 @@ impl WebOsCredential {
 pub struct WebOsTv {
     socket: WebSocket<Socket>,
     pointer: Option<WebSocket<Socket>>,
+    pointer_last_activity: Option<Instant>,
     url: String,
     pin: Arc<Mutex<Vec<u8>>>,
     next: u64,
@@ -441,6 +490,26 @@ impl WebOsTv {
     }
 
     fn button(&mut self, name: &str) -> Result<()> {
+        // The Couch client is synchronous and is not shared between threads,
+        // so it cannot run Home Assistant's background pointer-socket reader.
+        // Before reusing a socket that has been idle, verify it with a
+        // WebSocket Ping/Pong. This also drains and answers any TV-initiated
+        // Ping frames queued while the socket was idle.
+        if self
+            .pointer_last_activity
+            .is_some_and(|last| last.elapsed() >= POINTER_PROBE_AFTER)
+        {
+            self.next += 1;
+            let nonce = self.next;
+            let healthy = self.pointer.as_mut().is_some_and(|pointer| {
+                pointer_probe(pointer, nonce, POINTER_PROBE_TIMEOUT).is_ok()
+            });
+            if !healthy {
+                self.pointer = None;
+                self.pointer_last_activity = None;
+            }
+        }
+
         if self.pointer.is_none() {
             let response = self.request(
                 "ssap://com.webos.service.networkinput/getPointerInputSocket",
@@ -454,20 +523,26 @@ impl WebOsTv {
             }
             self.pointer = Some(connect_socket(raw, self.pin.clone(), IO_TIMEOUT)?);
         }
-        let pointer = self.pointer.as_mut().ok_or(Error::Transport)?;
-        pointer
-            .get_ref()
-            .timeout(IO_TIMEOUT)
-            .map_err(|_| Error::Transport)?;
-        if pointer
-            .send(Message::Text(
+
+        let sent = {
+            let pointer = self.pointer.as_mut().ok_or(Error::Transport)?;
+            pointer
+                .get_ref()
+                .timeout(IO_TIMEOUT)
+                .map_err(|_| Error::Transport)?;
+            pointer.send(Message::Text(
                 format!("type:button\nname:{name}\n\n").into(),
             ))
-            .is_err()
-        {
+        };
+        if sent.is_err() {
+            // A failed write has an uncertain delivery outcome. Drop the
+            // socket, report the failure, and let the next command reconnect;
+            // never replay a button that may already have reached the TV.
             self.pointer = None;
+            self.pointer_last_activity = None;
             return Err(Error::Transport);
         }
+        self.pointer_last_activity = Some(Instant::now());
         Ok(())
     }
 
@@ -540,6 +615,7 @@ impl DeviceClient for WebOsTv {
         let mut client = Self {
             socket,
             pointer: None,
+            pointer_last_activity: None,
             url: settings.url.clone(),
             pin,
             next: 0,
@@ -844,6 +920,92 @@ impl PairFlow for Pairing {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_probe_answers_tv_ping_before_reusing_socket() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            socket
+                .send(Message::Ping(b"tv-heartbeat".to_vec().into()))
+                .unwrap();
+
+            let until = Instant::now() + Duration::from_secs(2);
+            let mut received_tv_pong = false;
+            while Instant::now() < until && !received_tv_pong {
+                match socket.read() {
+                    Ok(Message::Ping(payload)) => {
+                        // Reading a Ping queues the protocol-mandated Pong.
+                        // Sending the matching Pong also flushes that reply.
+                        socket.send(Message::Pong(payload)).unwrap();
+                    }
+                    Ok(Message::Pong(payload)) if payload.as_ref() == b"tv-heartbeat" => {
+                        received_tv_pong = true;
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            received_tv_pong
+        });
+
+        let mut pointer = connect_socket(
+            &format!("ws://{address}/pointer"),
+            Arc::new(Mutex::new(Vec::new())),
+            IO_TIMEOUT,
+        )
+        .unwrap();
+        assert!(pointer_probe(&mut pointer, 7, Duration::from_secs(1)).is_ok());
+        assert!(server.join().unwrap());
+    }
+
+    #[test]
+    fn pointer_probe_accepts_the_matching_pong() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            match socket.read().unwrap() {
+                Message::Ping(payload) => socket.send(Message::Pong(payload)).unwrap(),
+                message => panic!("expected client Ping, got {message:?}"),
+            }
+        });
+
+        let mut pointer = connect_socket(
+            &format!("ws://{address}/pointer"),
+            Arc::new(Mutex::new(Vec::new())),
+            IO_TIMEOUT,
+        )
+        .unwrap();
+        assert!(pointer_probe(&mut pointer, 9, Duration::from_secs(1)).is_ok());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn pointer_probe_times_out_when_the_peer_does_not_answer() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let _socket = tungstenite::accept(stream).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+        });
+
+        let mut pointer = connect_socket(
+            &format!("ws://{address}/pointer"),
+            Arc::new(Mutex::new(Vec::new())),
+            IO_TIMEOUT,
+        )
+        .unwrap();
+        assert_eq!(
+            pointer_probe(&mut pointer, 8, Duration::from_millis(75)),
+            Err(Error::Timeout)
+        );
+        server.join().unwrap();
+    }
 
     #[test]
     fn settings_accept_an_ip_and_pre1_urls_but_reject_other_endpoints() {
