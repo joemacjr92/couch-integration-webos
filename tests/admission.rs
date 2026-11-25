@@ -5,7 +5,7 @@
 use couch_plugin::{
     testing::{self, Adapter, FakeDevice, Package},
     testing_v3::{self, PairingCase, PairingScenario},
-    PairStep, Request,
+    Credential, PairStep, Request,
 };
 use serde_json::{json, Value};
 use std::{
@@ -493,7 +493,7 @@ fn every_pairing_scenario_passes_the_shared_admission_harness() {
     );
 }
 
-fn pair_tv(tv: &FakeTv) -> (Package, Value) {
+fn pair_tv(tv: &FakeTv) -> (Package, Credential) {
     let package = Package::new(adapter());
     let mut pairing = package.host();
     let (_session, first) = pairing.pair_start(tv.settings(), None).unwrap();
