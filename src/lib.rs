@@ -289,6 +289,7 @@ fn read(socket: &mut WebSocket<Socket>, until: Instant) -> Result<Value> {
 /// only after it reads those frames. A matching Pong proves the peer is still
 /// servicing this connection; a timeout or close means the caller should drop
 /// it and negotiate a fresh pointer socket before sending the user's command.
+/// A matching Pong or a TV-initiated Ping confirms a live peer.
 fn pointer_probe(
     pointer: &mut WebSocket<Socket>,
     nonce: u64,
