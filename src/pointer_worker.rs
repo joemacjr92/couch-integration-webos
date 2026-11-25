@@ -31,7 +31,7 @@ impl SetReadTimeout for Socket {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WorkerError {
+pub(super) enum WorkerError {
     InvalidButton,
     Busy,
     StoppedBeforeSend,
@@ -47,13 +47,13 @@ enum Command {
 }
 
 /// Owns the pointer WebSocket's command channel and worker thread.
-struct PointerWorker {
+pub(super) struct PointerWorker {
     commands: SyncSender<Command>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl PointerWorker {
-    fn spawn(mut socket: WebSocket<Socket>) -> Result<Self, WorkerError> {
+    pub(super) fn spawn(mut socket: WebSocket<Socket>) -> Result<Self, WorkerError> {
         socket
             .get_ref()
             .set_read_timeout(READ_POLL)
@@ -71,11 +71,11 @@ impl PointerWorker {
         })
     }
 
-    fn is_finished(&self) -> bool {
+    pub(super) fn is_finished(&self) -> bool {
         self.thread.as_ref().map(|worker| worker.is_finished()).unwrap_or(true)
     }
 
-    fn button(&self, name: &str) -> Result<(), WorkerError> {
+    pub(super) fn button(&self, name: &str) -> Result<(), WorkerError> {
         if name.is_empty()
             || name.len() > 32
             || !name
