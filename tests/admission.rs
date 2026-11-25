@@ -455,7 +455,7 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
 }
 
 #[test]
-fn transport_disconnect_during_audio_subscription_fails_configuration() {
+fn transport_disconnect_during_audio_subscription_fails_first_operation() {
     let tv = FakeTv::start_disconnect_after_subscription(
         PairingScenario::Paired,
         "ssap://audio/getStatus",
@@ -470,9 +470,9 @@ fn transport_disconnect_during_audio_subscription_fails_configuration() {
     };
 
     let mut host = package.host();
-    assert!(host
-        .configure_with(tv.settings(), Some(&credential))
-        .is_err());
+    host.configure_with(tv.settings(), Some(&credential))
+        .unwrap();
+    assert!(host.command("volume-up").is_err());
     assert!(tv
         .requests()
         .iter()
