@@ -289,11 +289,7 @@ fn read(socket: &mut WebSocket<Socket>, until: Instant) -> Result<Value> {
 /// only after it reads those frames. A matching Pong or a TV-initiated Ping
 /// confirms a live peer; a timeout or close means the caller should drop it
 /// and negotiate a fresh pointer socket before sending the user's command.
-fn pointer_probe(
-    pointer: &mut WebSocket<Socket>,
-    nonce: u64,
-    timeout: Duration,
-) -> Result<()> {
+fn pointer_probe(pointer: &mut WebSocket<Socket>, nonce: u64, timeout: Duration) -> Result<()> {
     let payload = format!("couch-pointer-{nonce}").into_bytes();
     pointer
         .get_ref()
@@ -505,10 +501,9 @@ impl WebOsTv {
         {
             self.next += 1;
             let nonce = self.next;
-            let healthy = self
-                .pointer
-                .as_mut()
-                .is_some_and(|pointer| pointer_probe(pointer, nonce, POINTER_PROBE_TIMEOUT).is_ok());
+            let healthy = self.pointer.as_mut().is_some_and(|pointer| {
+                pointer_probe(pointer, nonce, POINTER_PROBE_TIMEOUT).is_ok()
+            });
             if !healthy {
                 self.pointer = None;
                 self.pointer_last_activity = None;
@@ -962,12 +957,7 @@ mod tests {
             IO_TIMEOUT,
         )
         .unwrap();
-        assert!(pointer_probe(
-            &mut pointer,
-            7,
-            Duration::from_secs(1)
-        )
-        .is_ok());
+        assert!(pointer_probe(&mut pointer, 7, Duration::from_secs(1)).is_ok());
         assert!(server.join().unwrap());
     }
 
@@ -990,12 +980,7 @@ mod tests {
             IO_TIMEOUT,
         )
         .unwrap();
-        assert!(pointer_probe(
-            &mut pointer,
-            9,
-            Duration::from_secs(1)
-        )
-        .is_ok());
+        assert!(pointer_probe(&mut pointer, 9, Duration::from_secs(1)).is_ok());
         server.join().unwrap();
     }
 
