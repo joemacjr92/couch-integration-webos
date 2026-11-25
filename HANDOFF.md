@@ -121,3 +121,218 @@ Useful links:
 - Fork PR #4: https://github.com/joemacjr92/couch-integration-webos/pull/4
 - Fork PR #5: https://github.com/joemacjr92/couch-integration-webos/pull/5
 - Source-tree CI run: https://github.com/joemacjr92/couch-integration-webos/actions/runs/45552001053
+
+
+---
+
+# Cross-Integration Engineering Handoff
+
+This section captures the shared engineering assumptions, decisions, and lessons from building all three CouchOS integrations. It is intentionally broader than the webOS feature handoff. Future sessions should use these as starting constraints, while still checking the live repositories before treating any implementation detail as current.
+
+## The three projects
+
+| Integration | Repository | Device / protocol focus | Proven scope |
+|---|---|---|---|
+| Fire TV | https://github.com/joemacjr92/couch-integration-firetv | Amazon Fire TV local REST API, PIN pairing, HTTPS | Navigation, media controls, supported wake behavior |
+| Monoprice HTP-1 | https://github.com/joemacjr92/couch-integration-htp1 | HTP-1 local WebSocket controller API | Power, volume, mute, input, status, five custom upmixer commands |
+| LG webOS | https://github.com/joemacjr92/couch-integration-webos | LG webOS SSAP/WebSocket and pointer-input behavior | TV controls, HDMI-CEC discovery/selection, audio state/subscriptions |
+
+These projects are separate integrations with different device protocols and capabilities. Reuse engineering patterns where appropriate; do not assume commands, connection models, authentication, event delivery, or capability sets are interchangeable.
+
+## Shared CouchOS assumptions and decisions
+
+### 1. Build for the actual CouchOS runtime and package contract
+
+- Treat the CouchOS SDK, package metadata, protocol version, target architecture, and packaging workflow as part of the product contract—not incidental build details.
+- Keep SDK references pinned and reproducible. Do not casually update SDK revisions or package metadata while making an unrelated feature change.
+- ARMv7 is the target architecture used by these integrations. A successful host build or unit-test run does not establish that the deployable ARMv7 package builds.
+- Validate with the repository's locked Rust dependency graph and the actual package/admission workflow. Avoid unintentional dependency drift.
+- Preserve the established package identity and metadata. Package IDs matter to repository installation and migration behavior.
+- Do not add development-machine setup details to user-facing READMEs. Document what an end user needs to install, configure, use, and troubleshoot the integration.
+
+### 2. Separate package distribution trust from device authentication
+
+There are two different security concerns:
+
+- **Package repository trust:** CouchOS verifies repository metadata/packages using the repository's public signing key and fingerprint.
+- **Device authentication:** each device protocol has its own credentials or pairing model. For example, Fire TV PIN pairing produces device credentials managed through CouchOS.
+
+Never conflate these. Never publish or commit a private package-signing key or private device credential. Publish only the repository public key. Users should independently compare the fingerprint CouchOS displays with the fingerprint published in the integration's documentation before trusting a repository.
+
+Fingerprint formats can be implementation-specific. The HTP-1 README explicitly documents the normalized PEM SHA-256 fingerprint shown by CouchOS and warns that it is not the DER public-key fingerprint. Do not relabel or recalculate a fingerprint without confirming the exact CouchOS calculation.
+
+### 3. Trusted repository installation is a package lifecycle, not just adding a URL
+
+The Fire TV and HTP-1 migration tests established an important operational behavior:
+
+- A locally sideloaded package and a repository-managed package with the same integration/package ID are not automatically converted just because the repository is added.
+- To make the repository-managed package available for selection/installation, remove the existing locally sideloaded package first.
+- Removing the integration package preserved its saved CouchOS connection settings in the tested Fire TV and HTP-1 migrations.
+- The Fire TV migration was deliberately scoped: remove only the Fire TV package; do not remove the webOS integration or its repository.
+- The HTP-1 README now documents removing the sideloaded package before installing the repository-managed package with the same ID.
+
+Practical rule: identify the exact package ID and installation source before recommending removal. Remove only the intended sideloaded package. Do not tell users to delete connection records, reset CouchOS, remove unrelated integrations, or remove a trusted repository unless there is specific evidence that is necessary.
+
+Test this behavior per integration when package IDs, migration code, or CouchOS package management changes. The fact that saved connections survived the Fire TV and HTP-1 migrations is a verified observation for those tests, not a blanket guarantee for every future package migration.
+
+### 4. A successful transport handshake is not proof of a working integration
+
+Validate the full application protocol and user-visible behavior:
+
+- An HTTP WebSocket upgrade response of `101` proves the WebSocket handshake, not that the application protocol, authentication, subscriptions, command handling, or state refresh works.
+- A settings form saving without a visible error does not prove that the device connection works or that state is being retrieved.
+- Verify actual command/response behavior, parsing, status refresh, error paths, and the behavior exposed to the CouchOS remote.
+- Device-specific ports and paths must be configurable or documented according to the actual protocol. CouchOS has been observed using nonstandard ports for other integrations; do not assume every device uses port 80 or 443.
+- Keep device communication on the local network where the device API is designed for local control. Document TLS behavior accurately, including any device-specific certificate limitations.
+
+### 5. Distinguish command semantics and state semantics
+
+Do not assume a command named Toggle is equivalent to explicit On/Off, or that cached state is always fresh enough to drive a toggle.
+
+- Prefer the device's native operation when it is the most reliable and semantically correct mechanism.
+- Explicit set-state operations and toggle operations may need different implementations.
+- If a command depends on cached state, prove how and when that state is refreshed, whether updates can arrive independently, and what happens when the cache is stale or absent.
+- Do not imitate another integration's asynchronous event model in a synchronous client without proving that the receive loop, message routing, and timing model are equivalent.
+- Parse device responses defensively. Preserve valid cached values when optional or malformed fields are absent; do not turn missing optional data into fabricated state.
+- Treat optional capability/subscription failures differently from core transport failures. Unsupported optional features should not unnecessarily disable basic control, but a genuine connection failure must not be hidden as an unsupported feature.
+
+The webOS mute-toggle investigation is a concrete example: the cached-subscription approach depended on receive-loop behavior that did not map cleanly to Couch's synchronous client. The separate native LG pointer-input `MUTE` approach was chosen for Toggle, while explicit Mute On/Off remained SSAP `setMute` operations. Keep that distinction visible when discussing webOS branches and PRs.
+
+### 6. Concurrency and ordering are correctness concerns
+
+The HTP-1 work established that a persistent WebSocket is not simply a stateless request pipe:
+
+- HTP-1 uses a persistent WebSocket with messages such as `getmso`, `mso`, `msoupdate`, and `changemso`.
+- Commands are JSON patches, and write ordering matters.
+- The agreed Phase 1 design is to serialize WebSocket operations that modify HTP-1 state while allowing safe independent read-only requests to remain concurrent.
+- Preserve command payloads and sequencing while adding serialization. Test ordering and concurrent callers explicitly.
+- Do not add a global lock indiscriminately if it blocks safe independent reads or creates avoidable latency.
+
+This is an HTP-1-specific implementation decision that may inform other persistent WebSocket clients, but each protocol must be examined independently before applying the same locking model.
+
+## Testing and evidence standards learned across the projects
+
+### Test layers are complementary
+
+Use the right evidence for each claim:
+
+1. **Unit tests** — parsing, state transitions, command construction, edge cases, topology/identity validation, and error handling.
+2. **Admission/package tests** — CouchOS-facing integration behavior, metadata, package process, simulated device interactions, and packaging assumptions.
+3. **Cross-compilation/package build** — the actual target architecture and deployable artifact.
+4. **CI** — reproducible execution of the repository's required checks.
+5. **Physical-device testing** — actual pairing, command behavior, state reporting, timing, and compatibility on the target hardware.
+6. **Remote/CouchOS UI verification** — package discovery, installation, connection configuration, and what the user can actually select or operate.
+
+Passing one layer does not imply that the others passed. In particular, unit tests and simulated admission tests do not replace hardware validation; a successful package build does not prove the device protocol works.
+
+### Use real logs to investigate real behavior
+
+- Prefer captured CouchOS/device logs and actual command traces over speculation about latency, retries, polling, or protocol behavior.
+- Trace the complete transaction path before changing timing or adding complexity.
+- A delay should have a documented reason tied to a device transition or observed behavior. Do not increase a delay merely because a larger value seems safer.
+- When evaluating a proposed timing change, compare captured behavior and tests, and ask whether it materially improves the user-visible outcome.
+- Record what the evidence proves and what it does not prove. Avoid turning one successful trace into a universal compatibility claim.
+
+### Preserve tests and existing behavior
+
+- Before changing a tested integration, establish the baseline and identify the exact regression risk.
+- Keep existing tests and add focused coverage for the new behavior. Do not replace implementation changes with tests when the requested work is an implementation fix.
+- When the user says to preserve all features and tests, compare the complete target tree, not just the headline feature.
+- For branch preparation, verify ancestry, changed files, commit counts, and tree equivalence where relevant. A squash should simplify history without dropping tracked files or behavior.
+- Report the exact branch on which tests ran. If a branch has an identical tree to a tested branch but has not itself run CI, say that plainly.
+
+## Project-specific verified lessons
+
+### Fire TV
+
+- Repository: https://github.com/joemacjr92/couch-integration-firetv
+- The integration is a Rust port/adaptation of Mase (Meir Miyara)'s original Unfolded Circle Fire TV integration. Preserve attribution to Mase and to dangerouslaser, creator of CouchOS, its documentation, SDK, and integration ecosystem. Also retain relevant Fire TV REST API research attribution to SLC-Josh where appropriate.
+- Pairing uses the Fire TV's four-digit PIN flow. Credentials are managed by CouchOS private credential storage, not ordinary integration settings.
+- Communication uses the Fire TV local HTTPS API. The device API uses a self-signed TLS certificate; the integration accommodates this for local communication. This is a device-specific exception, not a pattern to copy blindly to other integrations.
+- Verified controls include navigation (Up, Down, Left, Right, Select, Back, Home, Menu), media controls (Play/Pause, Fast Forward, Rewind), and supported power-on through DIAL.
+- Do not claim unsupported capabilities: volume/mute, power-off, status reporting, input enumeration, app listing/launching, device discovery, and key-hold/repeat behavior were listed as not currently supported in the README.
+- Initial design targeted Fire TV Cube; model and Fire OS API support can vary. Do not generalize compatibility to every Fire TV device.
+- Repository ID: `firetv`; preview repository URL: https://joemacjr92.github.io/couch-integration-firetv/preview
+- Published public-key fingerprint recorded in the README: `5ff5846b5d3cc1e404bd5a2ac7640414b91baecf20c2b03d0ada812c15b22a14`
+- Tested migration: locally sideloaded `firetv 0.1.0` was removed; repository-managed `firetv 0.1.3` was then installed. Saved CouchOS connection settings remained, and webOS was left untouched.
+- User-facing README should focus on installation, trust verification, pairing, supported features, compatibility, security, and credits—not local build-machine instructions.
+
+### Monoprice HTP-1
+
+- Repository: https://github.com/joemacjr92/couch-integration-htp1
+- The integration is a Rust port/adaptation of Mase's original Unfolded Circle HTP-1 integration. Preserve attribution to Mase and dangerouslaser/CouchOS.
+- HTP-1 communicates over its local WebSocket controller API. The controller path observed is `/ws/controller`; default port is `80`, with TLS optional and disabled by default in the documented configuration.
+- A `101` HTTP upgrade alone is not a functional test. Confirm the controller protocol, state refresh, and command/response path.
+- CouchOS connection settings are stored under `/opt/couch/connections/<integration-id>/`, not in a generic `config.json`. A tested HTP-1 connection record was at `/opt/couch/connections/monoprice-htp-1/plugin-connection.json`, with host `htp1-remote`, port `18081`, TLS disabled. Treat that as a test-environment observation, not a universal user configuration.
+- Verified repository-managed version `0.1.1` on the CouchOS remote. Hardware validation confirmed power, volume, mute, input/status, and all five custom upmixer commands: Auro, Dolby Surround, DTS Neural:X, Native, and Stereo.
+- Volume changes are in 1 dB steps. The protocol's safety behavior limits large jumps to 5 dB.
+- The five upmixers are exposed as custom commands, not as a dynamic upmixer selector.
+- Do not claim unsupported capabilities: Dirac Live calibration selection, Night mode, PEQ, seat-shaker controls, or a dynamic upmixer selector.
+- Protocol requirement documented: CouchOS protocol 3 (minimum 3); package architecture ARMv7.
+- Repository ID: `monoprice-htp1`; preview URL: https://joemacjr92.github.io/couch-integration-htp1/preview
+- Preview feed path observed: `preview/armv7/feed.json`
+- Published fingerprint in the README: `ad5ecdedddfbf48e8597053c2df0679c858af9ff4cdff879df50b9e33eeac79d` (normalized PEM fingerprint shown by CouchOS, not DER).
+- Tested migration requires removing a sideloaded package with the same ID before installing the repository-managed package. The saved connection record was observed to persist.
+- Agreed HTP-1 concurrency direction: serialize state-changing WebSocket writes, retain concurrency for safe independent read-only operations, and add ordering/concurrency tests. Verify the current branch before assuming this planned/accepted work has landed.
+- A separate agreed compatibility direction was fail-open filtering for newer-firmware add-on status: retain inputs when add-on status is unknown while preserving older-firmware behavior. Check implementation status before treating it as complete.
+- The user explicitly chose to establish SDK feasibility and core protocol behavior before broadening scope; media browsing was excluded from the initial scope.
+- The README should match the Fire TV README's user-facing structure while accurately reflecting HTP-1 capabilities. Do not copy Fire TV's feature claims or device behavior.
+
+### LG webOS
+
+- Repository: https://github.com/joemacjr92/couch-integration-webos
+- The Couch client is synchronous in important command/receive paths; do not assume Home Assistant's continuously running asynchronous WebSocket receiver exists in Couch.
+- HDMI-CEC discovery and selection require preserving the parent TV input context and validating device identity/topology so stale CEC devices are not selected.
+- Input switching includes a settle period for CEC transitions. Keep the delay tied to the measured transition behavior; do not casually remove or inflate it.
+- Audio subscriptions are processed during ordinary TV communication, not by an independent background receiver while the client is idle.
+- Optional unsupported audio subscriptions should not break basic TV control; distinguish that from transport failures.
+- Volume and mute state reporting are separate from command semantics. The native LG pointer-input `MUTE` key was chosen for Toggle in separate fork PR #4; explicit Mute On/Off remain SSAP `ssap://audio/setMute` operations.
+- Check current PR/branch state before assuming the native MUTE change or the response-field parser supporting both `muted` and `mute` has landed in `main`.
+
+## Documentation and attribution standards
+
+The Fire TV and HTP-1 READMEs established the preferred end-user documentation style:
+
+1. Short CouchOS-focused introduction.
+2. Clear trusted-repository installation steps, with repository ID, URL, public key, and fingerprint verification.
+3. Pairing or connection configuration.
+4. Supported features, with exact capabilities.
+5. Compatibility and protocol/architecture requirements where known.
+6. Explicitly listed unsupported features.
+7. Security behavior, including local-network assumptions and credential handling.
+8. Credits and acknowledgements for upstream/original work.
+
+Additional rules:
+
+- Keep documentation concise and user-facing. Do not include local development host paths, local build-machine setup, or irrelevant maintainer workflow details in end-user READMEs.
+- Be precise about what has been tested on actual hardware versus simulated or CI-tested.
+- Clearly state when compatibility is limited to a device family/model or protocol version.
+- Preserve original authorship and attribution when porting/adapting another developer's integration. A Rust rewrite does not erase the original design or research contribution.
+- Use the Fire TV and HTP-1 READMEs as structural examples for webOS, but never edit those READMEs merely to make them match webOS.
+
+## Repository distribution and release lessons
+
+- A preview feed is a real user-facing package distribution channel. Keep repository ID, base URL, architecture/feed paths, package metadata, versioning, public key, and generated index/feed files consistent.
+- The public signing key belongs in the repository so users can verify the feed. The private signing key must remain secret (for example, in GitHub Actions Secrets) and must never be committed or exposed in logs.
+- Validate the generated signed index/feed and package artifacts as part of release/admission checks. A successful Rust test run does not prove the signed feed is valid.
+- Treat signing-key changes as a deliberate migration. Confirm the public/private key pair, fingerprint, feed-history behavior, and required Actions secrets before publishing. Do not reset feed history or publish a release unless explicitly authorized.
+- Keep release workflow changes separate from feature work when possible, and document the required maintainer actions without exposing secrets.
+- Never claim that a package was published, a feed updated, or a remote upgraded unless the relevant operation and resulting artifact/install have been verified.
+
+## Future-session operating checklist across all three projects
+
+Before acting:
+
+1. Identify which of the three repositories the user means. Never infer from a generic phrase like "the integration" if context is ambiguous.
+2. Read that repository's handoff and current README, then check live branches, PRs, workflows, and latest commits.
+3. Identify the exact target branch and whether it is development, release, handoff, or upstream-submission work.
+4. Check current package ID, repository ID, feed URL, SDK pin, protocol requirement, architecture, and signing-key fingerprint before changing packaging or install instructions.
+5. Separate verified facts, observed device behavior, agreed design decisions, hypotheses, and future work. Label each accurately.
+6. Preserve known working behavior and existing tests. Make the smallest justified change and add regression coverage.
+7. Run the relevant test layers and report precisely which ones passed.
+8. For device-dependent behavior, ask for or use real logs and physical-device results; never fabricate validation.
+9. Keep the end-user README accurate and concise, including unsupported features and compatibility limits.
+10. Preserve upstream attribution and do not alter sibling integration repositories unless explicitly asked.
+11. Do not merge, publish, rotate signing keys, reset feed history, or perform destructive device/package operations without explicit authorization.
+12. End each substantial task by updating the appropriate handoff with the decision, evidence, affected commit/PR, validation state, and unresolved follow-up—on the dedicated documentation branch, not accidentally in a feature/upstream PR.
+
