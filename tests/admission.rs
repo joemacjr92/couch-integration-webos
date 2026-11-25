@@ -270,14 +270,8 @@ fn serve(
             // response. The client must route both subscription IDs without
             // allowing either notification to satisfy the pending request.
             for (subscription_uri, notification) in [
-                (
-                    "ssap://audio/getStatus",
-                    json!({"mute": true}),
-                ),
-                (
-                    "ssap://audio/getVolume",
-                    json!({"volumeStatus": {"volume": 62}}),
-                ),
+                ("ssap://audio/getStatus", json!({"mute": true})),
+                ("ssap://audio/getVolume", json!({"volumeStatus": {"volume": 62}})),
             ] {
                 if let Some(id) = subscription_ids.get(subscription_uri) {
                     socket
