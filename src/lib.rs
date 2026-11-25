@@ -478,8 +478,9 @@ impl WebOsTv {
     }
 
     fn muted(&mut self, on: bool) -> Result<()> {
-        self.request("ssap://audio/setMute", json!({"mute": on}))
-            .map(|_| ())
+        self.request("ssap://audio/setMute", json!({"mute": on}))?;
+        self.audio_state.muted = Some(on);
+        Ok(())
     }
 }
 
