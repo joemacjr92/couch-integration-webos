@@ -525,8 +525,20 @@ fn rejected_audio_subscriptions_do_not_prevent_normal_tv_operation() {
     assert_eq!(status.volume, Some(37));
     assert!(status.muted.is_none());
     let requests = tv.requests();
-    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://audio/getStatus").count(), 1);
-    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://audio/getVolume").count(), 2);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|uri| *uri == "ssap://audio/getStatus")
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|uri| *uri == "ssap://audio/getVolume")
+            .count(),
+        2
+    );
     assert!(requests.iter().any(|uri| uri == "ssap://audio/volumeUp"));
 }
 
@@ -541,12 +553,27 @@ fn stale_cec_child_is_not_launched_after_disappearing_from_tv_probe() {
     );
     let (_package, mut host) = configure_paired_tv(&tv);
     let inputs = host.inputs().unwrap();
-    let child = inputs.iter().find(|input| input.name == "Soundbar/Receiver - Apple TV").unwrap();
+    let child = inputs
+        .iter()
+        .find(|input| input.name == "Soundbar/Receiver - Apple TV")
+        .unwrap();
 
     assert!(host.command(&format!("input:{}", child.id)).is_err());
     let requests = tv.requests();
-    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://com.webos.applicationManager/launch").count(), 0);
-    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://com.webos.service.eim/getAllInputStatus").count(), 2);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|uri| *uri == "ssap://com.webos.applicationManager/launch")
+            .count(),
+        0
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|uri| *uri == "ssap://com.webos.service.eim/getAllInputStatus")
+            .count(),
+        2
+    );
 }
 
 #[test]
@@ -564,8 +591,20 @@ fn cec_selection_is_rejected_when_tv_reports_a_different_device_after_launch() {
 
     assert!(host.command(&format!("input:{}", child.id)).is_err());
     let requests = tv.requests();
-    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://com.webos.applicationManager/launch").count(), 1);
-    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://com.webos.service.eim/getAllInputStatus").count(), 3);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|uri| *uri == "ssap://com.webos.applicationManager/launch")
+            .count(),
+        1
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|uri| *uri == "ssap://com.webos.service.eim/getAllInputStatus")
+            .count(),
+        3
+    );
 }
 
 #[test]
