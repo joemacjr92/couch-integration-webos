@@ -504,7 +504,9 @@ impl WebOsTv {
             self.next += 1;
             let nonce = self.next;
             let probe_started = Instant::now();
-            let probe_result = self.pointer.as_mut()
+            let probe_result = self
+                .pointer
+                .as_mut()
                 .map(|pointer| pointer_probe(pointer, nonce, POINTER_PROBE_TIMEOUT))
                 .unwrap_or(Err(Error::Transport));
             pointer_diagnostics::record(&format!(
