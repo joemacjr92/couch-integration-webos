@@ -286,10 +286,9 @@ fn read(socket: &mut WebSocket<Socket>, until: Instant) -> Result<Value> {
 /// Verify an idle pointer WebSocket before sending a one-way button frame.
 ///
 /// Reading is important here: tungstenite queues automatic Pong/Close replies
-/// only after it reads those frames. A matching Pong proves the peer is still
-/// servicing this connection; a timeout or close means the caller should drop
-/// it and negotiate a fresh pointer socket before sending the user's command.
-/// A matching Pong or a TV-initiated Ping confirms a live peer.
+/// only after it reads those frames. A matching Pong or a TV-initiated Ping
+/// confirms a live peer; a timeout or close means the caller should drop it
+/// and negotiate a fresh pointer socket before sending the user's command.
 fn pointer_probe(
     pointer: &mut WebSocket<Socket>,
     nonce: u64,
