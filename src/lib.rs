@@ -1,7 +1,7 @@
 //! LG webOS LAN control over SSAP.
 //!
 //! One package child owns one control WebSocket and, when navigation is used,
-//! one pointer WebSocket. Commands are never retried. Pairing returns the TV's
+//! one pointer WebSocket worker. Button commands are never replayed. Pairing returns the TV's
 //! client key and exact TLS certificate as a host-owned protocol-3 credential.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -23,8 +23,6 @@ use tungstenite::{Message, WebSocket};
 use url::Url;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(4);
-const POINTER_PROBE_AFTER: Duration = Duration::from_secs(5);
-const POINTER_PROBE_TIMEOUT: Duration = Duration::from_millis(750);
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 const PAIR_BUDGET: Duration = Duration::from_secs(85);
 const PAIR_POLL_MS: u32 = 1500;
@@ -34,6 +32,9 @@ const CEC_LAUNCH_SETTLE: Duration = Duration::from_millis(2500);
 
 mod cec;
 mod pointer_diagnostics;
+mod pointer_worker;
+
+use pointer_worker::{PointerWorker, WorkerError};
 
 fn safe_label(value: &Value) -> Option<&str> {
     value
@@ -284,52 +285,6 @@ fn read(socket: &mut WebSocket<Socket>, until: Instant) -> Result<Value> {
     }
 }
 
-/// Verify an idle pointer WebSocket before sending a one-way button frame.
-///
-/// Reading is important here: tungstenite queues automatic Pong/Close replies
-/// only after it reads those frames. A matching Pong or a TV-initiated Ping
-/// confirms a live peer; a timeout or close means the caller should drop it
-/// and negotiate a fresh pointer socket before sending the user's command.
-fn pointer_probe(pointer: &mut WebSocket<Socket>, nonce: u64, timeout: Duration) -> Result<()> {
-    let payload = format!("couch-pointer-{nonce}").into_bytes();
-    pointer
-        .get_ref()
-        .timeout(timeout)
-        .map_err(|_| Error::Transport)?;
-    pointer
-        .send(Message::Ping(payload.clone().into()))
-        .map_err(|_| Error::Transport)?;
-
-    let until = Instant::now() + timeout;
-    loop {
-        let left = until
-            .checked_duration_since(Instant::now())
-            .ok_or(Error::Timeout)?;
-        pointer
-            .get_ref()
-            .timeout(left)
-            .map_err(|_| Error::Transport)?;
-        match pointer.read() {
-            Ok(Message::Pong(reply)) if reply.as_ref() == payload.as_slice() => return Ok(()),
-            // A TV-initiated Ping is itself proof that the peer is alive. The
-            // read queued its automatic Pong; flush it before sending the key.
-            Ok(Message::Ping(_)) => return pointer.flush().map_err(|_| Error::Transport),
-            Ok(Message::Pong(_)) => {}
-            Ok(Message::Close(_)) => return Err(Error::Transport),
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                return Err(Error::Timeout)
-            }
-            Err(_) => return Err(Error::Transport),
-        }
-    }
-}
-
 fn registered(socket: &mut WebSocket<Socket>, key: &str) -> Result<()> {
     send(socket, registration(Some(key)))?;
     let until = Instant::now() + REGISTER_TIMEOUT;
@@ -384,8 +339,7 @@ impl WebOsCredential {
 
 pub struct WebOsTv {
     socket: WebSocket<Socket>,
-    pointer: Option<WebSocket<Socket>>,
-    pointer_last_activity: Option<Instant>,
+    pointer: Option<PointerWorker>,
     url: String,
     pin: Arc<Mutex<Vec<u8>>>,
     next: u64,
@@ -490,90 +444,106 @@ impl WebOsTv {
         Ok(())
     }
 
+    fn connect_pointer_worker(&mut self) -> Result<()> {
+        let request_started = Instant::now();
+        pointer_diagnostics::record("requesting pointer socket over SSAP");
+        let response = self.request(
+            "ssap://com.webos.service.networkinput/getPointerInputSocket",
+            json!({}),
+        );
+        pointer_diagnostics::record(&format!(
+            "SSAP pointer socket request result={} elapsed_ms={}",
+            if response.is_ok() { "ok" } else { "error" },
+            request_started.elapsed().as_millis()
+        ));
+        let response = response?;
+        let raw = response["socketPath"].as_str().ok_or(Error::Protocol)?;
+        let (pointer, host, port) = endpoint(raw)?;
+        let (control, own_host, own_port) = endpoint(&self.url)?;
+        if host != own_host || port != own_port || pointer.scheme() != control.scheme() {
+            return Err(Error::Protocol);
+        }
+
+        let connect_started = Instant::now();
+        pointer_diagnostics::record("connecting pointer WebSocket");
+        let pointer = connect_socket(raw, self.pin.clone(), IO_TIMEOUT);
+        pointer_diagnostics::record(&format!(
+            "pointer WebSocket connect result={} elapsed_ms={}",
+            if pointer.is_ok() { "ok" } else { "error" },
+            connect_started.elapsed().as_millis()
+        ));
+        let worker = PointerWorker::spawn(pointer?).map_err(|_| Error::Transport)?;
+        self.pointer = Some(worker);
+        pointer_diagnostics::record("pointer worker attached");
+        Ok(())
+    }
+
     fn button(&mut self, name: &str) -> Result<()> {
         pointer_diagnostics::record(&format!("button start name={name}"));
-        // The Couch client is synchronous and is not shared between threads,
-        // so it cannot run Home Assistant's background pointer-socket reader.
-        // Before reusing a socket that has been idle, verify it with a
-        // WebSocket Ping/Pong. This also drains and answers any TV-initiated
-        // Ping frames queued while the socket was idle.
+
+        // The worker continuously services incoming frames while the main
+        // thread remains the sole owner of DeviceClient and the SSAP socket.
+        // If it is already known to have stopped, replace it before sending.
         if self
-            .pointer_last_activity
-            .is_some_and(|last| last.elapsed() >= POINTER_PROBE_AFTER)
+            .pointer
+            .as_ref()
+            .is_some_and(PointerWorker::is_finished)
         {
-            self.next += 1;
-            let nonce = self.next;
-            let probe_started = Instant::now();
-            let probe_result = self
-                .pointer
-                .as_mut()
-                .map(|pointer| pointer_probe(pointer, nonce, POINTER_PROBE_TIMEOUT))
-                .unwrap_or(Err(Error::Transport));
-            pointer_diagnostics::record(&format!(
-                "probe result={:?} elapsed_ms={}",
-                probe_result,
-                probe_started.elapsed().as_millis()
-            ));
-            let healthy = probe_result.is_ok();
-            if !healthy {
-                pointer_diagnostics::record("discarding pointer socket after failed probe");
-                self.pointer = None;
-                self.pointer_last_activity = None;
-            }
-        }
-
-        if self.pointer.is_none() {
-            let request_started = Instant::now();
-            pointer_diagnostics::record("requesting replacement pointer socket over SSAP");
-            let response = self.request(
-                "ssap://com.webos.service.networkinput/getPointerInputSocket",
-                json!({}),
-            );
-            pointer_diagnostics::record(&format!(
-                "SSAP pointer socket request result={} elapsed_ms={}",
-                if response.is_ok() { "ok" } else { "error" },
-                request_started.elapsed().as_millis()
-            ));
-            let response = response?;
-            let raw = response["socketPath"].as_str().ok_or(Error::Protocol)?;
-            let (pointer, host, port) = endpoint(raw)?;
-            let (control, own_host, own_port) = endpoint(&self.url)?;
-            if host != own_host || port != own_port || pointer.scheme() != control.scheme() {
-                return Err(Error::Protocol);
-            }
-            let connect_started = Instant::now();
-            pointer_diagnostics::record("connecting pointer WebSocket");
-            let pointer = connect_socket(raw, self.pin.clone(), IO_TIMEOUT);
-            pointer_diagnostics::record(&format!(
-                "pointer WebSocket connect result={} elapsed_ms={}",
-                if pointer.is_ok() { "ok" } else { "error" },
-                connect_started.elapsed().as_millis()
-            ));
-            self.pointer = Some(pointer?);
-        }
-
-        let sent = {
-            let pointer = self.pointer.as_mut().ok_or(Error::Transport)?;
-            pointer
-                .get_ref()
-                .timeout(IO_TIMEOUT)
-                .map_err(|_| Error::Transport)?;
-            pointer.send(Message::Text(
-                format!("type:button\nname:{name}\n\n").into(),
-            ))
-        };
-        if sent.is_err() {
-            // A failed write has an uncertain delivery outcome. Drop the
-            // socket, report the failure, and let the next command reconnect;
-            // never replay a button that may already have reached the TV.
-            pointer_diagnostics::record("pointer button send failed; dropping socket");
+            pointer_diagnostics::record("pointer worker already stopped; discarding it");
             self.pointer = None;
-            self.pointer_last_activity = None;
-            return Err(Error::Transport);
         }
-        pointer_diagnostics::record(&format!("pointer button send succeeded name={name}"));
-        self.pointer_last_activity = Some(Instant::now());
-        Ok(())
+        if self.pointer.is_none() {
+            self.connect_pointer_worker()?;
+        }
+
+        let result = self.pointer.as_ref().ok_or(Error::Transport)?.button(name);
+        match result {
+            Ok(()) => {
+                pointer_diagnostics::record(&format!("pointer button send succeeded name={name}"));
+                Ok(())
+            }
+            Err(WorkerError::StoppedBeforeSend) => {
+                // The worker confirms the command was not accepted. Replacing
+                // the socket and sending once is safe in this narrow case.
+                pointer_diagnostics::record(
+                    "pointer worker stopped before accepting button; reconnecting",
+                );
+                self.pointer = None;
+                self.connect_pointer_worker()?;
+                match self.pointer.as_ref().ok_or(Error::Transport)?.button(name) {
+                    Ok(()) => {
+                        pointer_diagnostics::record(&format!(
+                            "pointer button send succeeded after safe reconnect name={name}"
+                        ));
+                        Ok(())
+                    }
+                    Err(WorkerError::InvalidButton) => {
+                        self.pointer = None;
+                        Err(Error::Configuration)
+                    }
+                    Err(_) => {
+                        // Once queued to the replacement worker, delivery is
+                        // uncertain. Drop it and never attempt another replay.
+                        pointer_diagnostics::record(
+                            "replacement pointer button failed; not retrying",
+                        );
+                        self.pointer = None;
+                        Err(Error::Transport)
+                    }
+                }
+            }
+            Err(WorkerError::InvalidButton) => {
+                self.pointer = None;
+                Err(Error::Configuration)
+            }
+            Err(WorkerError::Busy | WorkerError::Transport) => {
+                pointer_diagnostics::record(
+                    "pointer worker button result uncertain; dropping worker without replay",
+                );
+                self.pointer = None;
+                Err(Error::Transport)
+            }
+        }
     }
 
     fn volume(&mut self) -> Result<Value> {
@@ -646,7 +616,6 @@ impl DeviceClient for WebOsTv {
         let mut client = Self {
             socket,
             pointer: None,
-            pointer_last_activity: None,
             url: settings.url.clone(),
             pin,
             next: 0,
@@ -951,92 +920,6 @@ impl PairFlow for Pairing {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pointer_probe_answers_tv_ping_before_reusing_socket() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut socket = tungstenite::accept(stream).unwrap();
-            socket
-                .send(Message::Ping(b"tv-heartbeat".to_vec().into()))
-                .unwrap();
-
-            let until = Instant::now() + Duration::from_secs(2);
-            let mut received_tv_pong = false;
-            while Instant::now() < until && !received_tv_pong {
-                match socket.read() {
-                    Ok(Message::Ping(payload)) => {
-                        // Reading a Ping queues the protocol-mandated Pong.
-                        // Sending the matching Pong also flushes that reply.
-                        socket.send(Message::Pong(payload)).unwrap();
-                    }
-                    Ok(Message::Pong(payload)) if payload.as_ref() == b"tv-heartbeat" => {
-                        received_tv_pong = true;
-                    }
-                    Ok(_) => {}
-                    Err(_) => break,
-                }
-            }
-            received_tv_pong
-        });
-
-        let mut pointer = connect_socket(
-            &format!("ws://{address}/pointer"),
-            Arc::new(Mutex::new(Vec::new())),
-            IO_TIMEOUT,
-        )
-        .unwrap();
-        assert!(pointer_probe(&mut pointer, 7, Duration::from_secs(1)).is_ok());
-        assert!(server.join().unwrap());
-    }
-
-    #[test]
-    fn pointer_probe_accepts_the_matching_pong() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let mut socket = tungstenite::accept(stream).unwrap();
-            match socket.read().unwrap() {
-                Message::Ping(payload) => socket.send(Message::Pong(payload)).unwrap(),
-                message => panic!("expected client Ping, got {message:?}"),
-            }
-        });
-
-        let mut pointer = connect_socket(
-            &format!("ws://{address}/pointer"),
-            Arc::new(Mutex::new(Vec::new())),
-            IO_TIMEOUT,
-        )
-        .unwrap();
-        assert!(pointer_probe(&mut pointer, 9, Duration::from_secs(1)).is_ok());
-        server.join().unwrap();
-    }
-
-    #[test]
-    fn pointer_probe_times_out_when_the_peer_does_not_answer() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let _socket = tungstenite::accept(stream).unwrap();
-            std::thread::sleep(Duration::from_millis(300));
-        });
-
-        let mut pointer = connect_socket(
-            &format!("ws://{address}/pointer"),
-            Arc::new(Mutex::new(Vec::new())),
-            IO_TIMEOUT,
-        )
-        .unwrap();
-        assert_eq!(
-            pointer_probe(&mut pointer, 8, Duration::from_millis(75)),
-            Err(Error::Timeout)
-        );
-        server.join().unwrap();
-    }
 
     #[test]
     fn settings_accept_an_ip_and_pre1_urls_but_reject_other_endpoints() {
