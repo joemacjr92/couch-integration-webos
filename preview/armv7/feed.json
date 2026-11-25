@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "channel": "preview",
-  "sequence": 9,
-  "issued": "2026-11-25T01:21:45Z",
-  "expires": "2026-12-25T01:21:45Z",
+  "sequence": 10,
+  "issued": "2026-11-25T02:19:47Z",
+  "expires": "2026-12-25T02:19:47Z",
   "index": {
     "path": "APKINDEX.tar.gz",
-    "size": 1149,
-    "sha256": "b07473f3d269f2a80df179d323fcff48393b4d0287106fb9227e8a1aabba51c9"
+    "size": 1191,
+    "sha256": "54273f24d689b799da756e4e232570db168446d5de646da1c4cb348dec6d62ca"
   },
   "packages": [
     {
@@ -16,6 +16,15 @@
       "apk": "couch-integration-webos-0.1.0_pre5_git1-r0.apk",
       "size": 767962,
       "sha256": "5f56f21ecad828a793b49b22786e45d35a38e41bbe948cd37642842372134ae1",
+      "protocol_version": 5,
+      "min_core_protocol_version": 5
+    },
+    {
+      "id": "webos",
+      "version": "0.1.0_pre5_git10",
+      "apk": "couch-integration-webos-0.1.0_pre5_git10-r0.apk",
+      "size": 770941,
+      "sha256": "c8422da6bf5d3a4e62866cf95c7d15cbf60782259858ed50888d8cb3fd395fd6",
       "protocol_version": 5,
       "min_core_protocol_version": 5
     },
