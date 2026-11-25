@@ -498,7 +498,7 @@ impl WebOsTv {
         // WebSocket Ping/Pong. This also drains and answers any TV-initiated
         // Ping frames queued while the socket was idle.
         if self
-            . pointer_last_activity
+            .pointer_last_activity
             .is_some_and(|last| last.elapsed() >= POINTER_PROBE_AFTER)
         {
             let healthy = self
