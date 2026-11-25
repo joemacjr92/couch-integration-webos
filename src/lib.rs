@@ -927,7 +927,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pointer_probe_answers_tv_ping_and_requires_its_matching_pong() {
+    fn pointer_probe_answers_tv_ping_before_reusing_socket() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
