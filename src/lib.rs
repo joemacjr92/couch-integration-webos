@@ -45,6 +45,74 @@ fn foreground_title(foreground: &Value) -> Option<String> {
     safe_label(&foreground["appName"]).map(str::to_owned)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubscriptionKind {
+    AudioStatus,
+    Volume,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct AudioState {
+    muted: Option<bool>,
+    volume: Option<u8>,
+}
+
+fn volume_payload(payload: &Value) -> &Value {
+    payload.get("volumeStatus").unwrap_or(payload)
+}
+
+fn apply_subscription_payload(kind: SubscriptionKind, payload: &Value, state: &mut AudioState) {
+    match kind {
+        SubscriptionKind::AudioStatus => {
+            if let Some(muted) = payload.get("mute").and_then(Value::as_bool) {
+                state.muted = Some(muted);
+            }
+        }
+        SubscriptionKind::Volume => {
+            let normalized = volume_payload(payload);
+            if let Some(volume) = normalized
+                .get("volume")
+                .and_then(Value::as_u64)
+                .and_then(|value| u8::try_from(value).ok())
+                .filter(|value| *value <= 100)
+            {
+                state.volume = Some(volume);
+            }
+        }
+    }
+}
+
+fn subscription_succeeded(message: &Value) -> bool {
+    message["type"] == "response"
+        && message["payload"]["returnValue"] != false
+        && (message["payload"]["returnValue"] == true
+            || message["payload"]["subscribed"] == true
+            || message["payload"]["subscription"] == true)
+}
+
+/// Route a frame only when its ID belongs to a known subscription. Invalid
+/// fields leave the last valid cached value intact.
+fn route_subscription_message(
+    message: &Value,
+    subscriptions: &HashMap<String, SubscriptionKind>,
+    state: &mut AudioState,
+) -> bool {
+    let Some(id) = message.get("id").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(kind) = subscriptions.get(id) else {
+        return false;
+    };
+    if message["type"] == "error" || message["payload"]["returnValue"] == false {
+        return true;
+    }
+    if message["type"] == "response" {
+        apply_subscription_payload(*kind, &message["payload"], state);
+        return true;
+    }
+    false
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub url: String,
@@ -271,6 +339,8 @@ pub struct WebOsTv {
     url: String,
     pin: Arc<Mutex<Vec<u8>>>,
     next: u64,
+    subscriptions: HashMap<String, SubscriptionKind>,
+    audio_state: AudioState,
     cec_selections: HashMap<String, cec::CecSelection>,
 }
 
@@ -288,6 +358,9 @@ impl WebOsTv {
         let until = Instant::now() + IO_TIMEOUT;
         loop {
             let value = read(&mut self.socket, until)?;
+            if route_subscription_message(&value, &self.subscriptions, &mut self.audio_state) {
+                continue;
+            }
             if value["id"] != id {
                 continue;
             }
@@ -298,6 +371,37 @@ impl WebOsTv {
                 return Err(Error::Protocol);
             }
             return Ok(value["payload"].clone());
+        }
+    }
+
+    fn subscribe(&mut self, uri: &str, kind: SubscriptionKind) -> Result<()> {
+        if !uri.starts_with("ssap://") || uri.len() > 256 || uri.chars().any(char::is_control) {
+            return Err(Error::Configuration);
+        }
+        self.next += 1;
+        let id = format!("couch-{}", self.next);
+        send(
+            &mut self.socket,
+            json!({"id": id, "type": "subscribe", "uri": uri, "payload": {}}),
+        )?;
+        let until = Instant::now() + IO_TIMEOUT;
+        loop {
+            let message = read(&mut self.socket, until)?;
+            if route_subscription_message(&message, &self.subscriptions, &mut self.audio_state) {
+                continue;
+            }
+            if message["id"] != id {
+                continue;
+            }
+            if message["type"] == "error" || message["payload"]["returnValue"] == false {
+                return Err(Error::Rejected);
+            }
+            if !subscription_succeeded(&message) {
+                return Err(Error::Protocol);
+            }
+            apply_subscription_payload(kind, &message["payload"], &mut self.audio_state);
+            self.subscriptions.insert(id, kind);
+            return Ok(());
         }
     }
 
@@ -368,7 +472,9 @@ impl WebOsTv {
     }
 
     fn volume(&mut self) -> Result<Value> {
-        self.request("ssap://audio/getVolume", json!({}))
+        let value = self.request("ssap://audio/getVolume", json!({}))?;
+        apply_subscription_payload(SubscriptionKind::Volume, &value, &mut self.audio_state);
+        Ok(value)
     }
 
     fn muted(&mut self, on: bool) -> Result<()> {
@@ -430,14 +536,31 @@ impl DeviceClient for WebOsTv {
         let mut socket =
             connect_socket(&settings.url, pin.clone(), IO_TIMEOUT).map_err(SdkError::from)?;
         registered(&mut socket, &credential.key).map_err(SdkError::from)?;
-        Ok(Self {
+        let mut client = Self {
             socket,
             pointer: None,
             url: settings.url.clone(),
             pin,
             next: 0,
+            subscriptions: HashMap::new(),
+            audio_state: AudioState::default(),
             cec_selections: HashMap::new(),
-        })
+        };
+        // Subscriptions are opportunistic. A TV that does not support either
+        // endpoint must still connect and serve ordinary requests normally.
+        for (uri, kind) in [
+            ("ssap://audio/getStatus", SubscriptionKind::AudioStatus),
+            ("ssap://audio/getVolume", SubscriptionKind::Volume),
+        ] {
+            if let Err(error) = client.subscribe(uri, kind) {
+                // A rejected, malformed, or unsupported subscription is
+                // optional. A closed/broken transport is not a usable client.
+                if error == Error::Transport {
+                    return Err(SdkError::from(error));
+                }
+            }
+        }
+        Ok(client)
     }
 
     fn pair_start(
@@ -454,11 +577,8 @@ impl DeviceClient for WebOsTv {
             Function::VolumeUp => self.simple("ssap://audio/volumeUp"),
             Function::VolumeDown => self.simple("ssap://audio/volumeDown"),
             Function::Mute => {
-                let muted = self
-                    .volume()?
-                    .get("mute")
-                    .and_then(Value::as_bool)
-                    .ok_or(Error::Protocol)?;
+                let _ = self.volume()?;
+                let muted = self.audio_state.muted.ok_or(Error::Protocol)?;
                 self.muted(!muted)
             }
             Function::MuteOn => self.muted(true),
@@ -537,8 +657,9 @@ impl DeviceClient for WebOsTv {
         let level = volume["volume"]
             .as_u64()
             .and_then(|value| u8::try_from(value).ok())
-            .filter(|value| *value <= 100);
-        let muted = volume["mute"].as_bool();
+            .filter(|value| *value <= 100)
+            .or(self.audio_state.volume);
+        let muted = self.audio_state.muted;
         let input = foreground["appId"]
             .as_str()
             .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
@@ -812,6 +933,122 @@ mod tests {
         );
         assert_eq!(foreground_title(&json!({"appId":"netflix"})), None);
         assert_eq!(foreground_title(&json!({"appName":"Bad\nname"})), None);
+    }
+
+    #[test]
+    fn volume_subscription_normalizes_nested_and_legacy_payloads() {
+        let mut state = AudioState::default();
+        apply_subscription_payload(
+            SubscriptionKind::Volume,
+            &json!({"volumeStatus":{"volume":37,"muted":true}}),
+            &mut state,
+        );
+        assert_eq!(
+            state,
+            AudioState {
+                muted: None,
+                volume: Some(37)
+            }
+        );
+
+        apply_subscription_payload(
+            SubscriptionKind::Volume,
+            &json!({"volume":42,"mute":false}),
+            &mut state,
+        );
+        assert_eq!(
+            state,
+            AudioState {
+                muted: None,
+                volume: Some(42)
+            }
+        );
+    }
+
+    #[test]
+    fn audio_status_subscription_preserves_explicit_false_and_ignores_malformed_values() {
+        let mut state = AudioState {
+            muted: Some(true),
+            volume: Some(25),
+        };
+        apply_subscription_payload(
+            SubscriptionKind::AudioStatus,
+            &json!({"mute":false}),
+            &mut state,
+        );
+        assert_eq!(state.muted, Some(false));
+        apply_subscription_payload(
+            SubscriptionKind::AudioStatus,
+            &json!({"mute":"false"}),
+            &mut state,
+        );
+        assert_eq!(state.muted, Some(false));
+        assert_eq!(state.volume, Some(25));
+    }
+
+    #[test]
+    fn subscription_dispatch_routes_only_registered_ids_without_erasing_valid_state() {
+        let subscriptions = HashMap::from([
+            ("mute-sub".to_owned(), SubscriptionKind::AudioStatus),
+            ("volume-sub".to_owned(), SubscriptionKind::Volume),
+        ]);
+        let mut state = AudioState::default();
+
+        assert!(route_subscription_message(
+            &json!({"id":"mute-sub","type":"response","payload":{"mute":false}}),
+            &subscriptions,
+            &mut state,
+        ));
+        assert_eq!(state.muted, Some(false));
+
+        assert!(route_subscription_message(
+            &json!({"id":"volume-sub","type":"response","payload":{"volumeStatus":{"volume":61}}}),
+            &subscriptions,
+            &mut state,
+        ));
+        assert_eq!(state.volume, Some(61));
+
+        assert!(route_subscription_message(
+            &json!({"id":"mute-sub","type":"response","payload":{"mute":null}}),
+            &subscriptions,
+            &mut state,
+        ));
+        assert_eq!(
+            state,
+            AudioState {
+                muted: Some(false),
+                volume: Some(61)
+            }
+        );
+
+        assert!(!route_subscription_message(
+            &json!({"id":"unrelated","type":"response","payload":{"mute":true}}),
+            &subscriptions,
+            &mut state,
+        ));
+        assert_eq!(state.muted, Some(false));
+    }
+
+    #[test]
+    fn subscription_acknowledgement_requires_an_explicit_success_indicator() {
+        assert!(subscription_succeeded(
+            &json!({"type":"response","payload":{"returnValue":true}})
+        ));
+        assert!(subscription_succeeded(
+            &json!({"type":"response","payload":{"subscribed":true}})
+        ));
+        assert!(subscription_succeeded(
+            &json!({"type":"response","payload":{"subscription":true}})
+        ));
+        assert!(!subscription_succeeded(
+            &json!({"type":"response","payload":{"returnValue":false}})
+        ));
+        assert!(!subscription_succeeded(
+            &json!({"type":"response","payload":{}})
+        ));
+        assert!(!subscription_succeeded(
+            &json!({"type":"error","payload":{"returnValue":true}})
+        ));
     }
 
     #[test]
