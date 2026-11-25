@@ -292,7 +292,7 @@ mod tests {
         let mut map = HashMap::new();
         append_children(&external, &eim, &mut inputs, &mut map);
 
-        assert!(inputs.iter().any(|input| input.name == "p3i - HDMI 2"));
+        assert!(inputs.iter().any(|input| input.name == "HDMI 2 - p3i"));
         let selection = map
             .values()
             .find(|selection| selection.unique_id == "4")
