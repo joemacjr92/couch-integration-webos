@@ -39,10 +39,7 @@ impl FakeTv {
         Self::start_with_disconnect(scenario, None)
     }
 
-    fn start_disconnect_after_subscription(
-        scenario: PairingScenario,
-        uri: &'static str,
-    ) -> Self {
+    fn start_disconnect_after_subscription(scenario: PairingScenario, uri: &'static str) -> Self {
         Self::start_with_disconnect(scenario, Some(uri))
     }
 
@@ -395,7 +392,6 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
 
     drop(session);
 }
-
 
 #[test]
 fn transport_disconnect_during_audio_subscription_fails_configuration() {
