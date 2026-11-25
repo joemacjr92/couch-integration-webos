@@ -34,6 +34,8 @@ const CEC_LAUNCH_SETTLE: Duration = Duration::from_millis(2500);
 
 mod cec;
 mod pointer_diagnostics;
+#[cfg(test)]
+mod pointer_worker;
 
 fn safe_label(value: &Value) -> Option<&str> {
     value
