@@ -292,7 +292,7 @@ fn serve(
                         {"id": "HDMI_2", "label": parent_label}
                     ]
                 })
-            },
+            }
             "ssap://com.webos.service.eim/getAllInputStatus" => {
                 let call = eim_calls.fetch_add(1, Ordering::SeqCst) + 1;
                 let child_present = match options.cec {
@@ -323,7 +323,7 @@ fn serve(
                         "subList": sub_list
                     }]
                 })
-            },
+            }
             "ssap://com.webos.applicationManager/listLaunchPoints" => json!({
                 "returnValue": true,
                 "launchPoints": [
@@ -504,7 +504,8 @@ fn configure_paired_tv(tv: &FakeTv) -> (Package<'static>, couch_plugin::testing:
         panic!("pairing did not finish: {paired:?}");
     };
     let mut host = package.host();
-    host.configure_with(tv.settings(), Some(&credential)).unwrap();
+    host.configure_with(tv.settings(), Some(&credential))
+        .unwrap();
     (package, host)
 }
 
@@ -587,7 +588,10 @@ fn cec_selection_is_rejected_when_tv_reports_a_different_device_after_launch() {
     );
     let (_package, mut host) = configure_paired_tv(&tv);
     let inputs = host.inputs().unwrap();
-    let child = inputs.iter().find(|input| input.name == "Soundbar/Receiver - Apple TV").unwrap();
+    let child = inputs
+        .iter()
+        .find(|input| input.name == "Soundbar/Receiver - Apple TV")
+        .unwrap();
 
     assert!(host.command(&format!("input:{}", child.id)).is_err());
     let requests = tv.requests();
