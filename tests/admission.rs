@@ -186,6 +186,7 @@ fn serve(
         ))
         .unwrap();
     let mut subscription_ids = std::collections::HashMap::<String, String>::new();
+    let mut last_unique_id = "3".to_owned();
     while let Some(request) = receive(&mut socket) {
         let Some(uri) = request["uri"].as_str() else {
             continue;
@@ -229,7 +230,17 @@ fn serve(
             }),
             "ssap://com.webos.service.eim/getAllInputStatus" => json!({
                 "returnValue": true,
-                "devices": []
+                "devices": [{
+                    "id": "HDMI_2",
+                    "appId": "com.webos.app.hdmi2",
+                    "label": "Blu-ray",
+                    "lastUniqueId": last_unique_id,
+                    "subList": [{
+                        "osdName": "p3i",
+                        "uniqueId": 4,
+                        "depth": 2
+                    }]
+                }]
             }),
             "ssap://com.webos.applicationManager/listLaunchPoints" => json!({
                 "returnValue": true,
@@ -238,6 +249,13 @@ fn serve(
                     {"id": "com.webos.app.settings", "title": "Settings"}
                 ]
             }),
+            "ssap://com.webos.applicationManager/launch" => {
+                last_unique_id = request["payload"]["params"]["value"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                json!({"returnValue": true})
+            }
             "ssap://system.launcher/launch"
             | "ssap://com.webos.service.apiadapter/audio/changeSoundOutput" => {
                 json!({"returnValue": true})
@@ -311,6 +329,11 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
     let inputs = host.inputs().unwrap();
     assert_eq!(inputs[0].id, "HDMI_1");
     assert_eq!(inputs[0].name, "Game console");
+    let cec_input = inputs
+        .iter()
+        .find(|input| input.name == "p3i · HDMI 2")
+        .expect("CEC descendant is exposed as an input selector");
+    host.command(&format!("input:{}", cec_input.id)).unwrap();
     let apps = host.apps().unwrap();
     assert_eq!(apps[0].name, "Netflix");
     host.command("app:netflix").unwrap();
@@ -336,6 +359,9 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
             "ssap://com.webos.service.apiadapter/audio/getSoundOutput",
             "ssap://settings/getSystemSettings",
             "ssap://tv/getExternalInputList",
+            "ssap://com.webos.service.eim/getAllInputStatus",
+            "ssap://com.webos.service.eim/getAllInputStatus",
+            "ssap://com.webos.applicationManager/launch",
             "ssap://com.webos.service.eim/getAllInputStatus",
             "ssap://com.webos.applicationManager/listLaunchPoints",
             "ssap://system.launcher/launch",
