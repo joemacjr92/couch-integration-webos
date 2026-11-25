@@ -72,7 +72,10 @@ impl PointerWorker {
     }
 
     pub(super) fn is_finished(&self) -> bool {
-        self.thread.as_ref().map(|worker| worker.is_finished()).unwrap_or(true)
+        self.thread
+            .as_ref()
+            .map(|worker| worker.is_finished())
+            .unwrap_or(true)
     }
 
     pub(super) fn button(&self, name: &str) -> Result<(), WorkerError> {
@@ -281,7 +284,8 @@ mod tests {
         server.close(None).unwrap();
         assert!(matches!(server.read().unwrap(), Message::Close(_)));
 
-        // The worker has processed the close handshake before the response.
+        // Allow the worker to leave its receive loop after the close handshake.
+        thread::sleep(READ_POLL + Duration::from_millis(25));
         assert_eq!(worker.button("ENTER"), Err(WorkerError::StoppedBeforeSend));
     }
 
