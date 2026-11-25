@@ -972,6 +972,34 @@ mod tests {
     }
 
     #[test]
+    fn pointer_probe_accepts_the_matching_pong() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            match socket.read().unwrap() {
+                Message::Ping(payload) => socket.send(Message::Pong(payload)).unwrap(),
+                message => panic!("expected client Ping, got {message:?}"),
+            }
+        });
+
+        let mut pointer = connect_socket(
+            &format!("ws://{address}/pointer"),
+            Arc::new(Mutex::new(Vec::new())),
+            IO_TIMEOUT,
+        )
+        .unwrap();
+        assert!(pointer_probe(
+            &mut pointer,
+            9,
+            Duration::from_secs(1)
+        )
+        .is_ok());
+        server.join().unwrap();
+    }
+
+    #[test]
     fn pointer_probe_times_out_when_the_peer_does_not_answer() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
