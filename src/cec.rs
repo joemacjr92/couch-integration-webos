@@ -53,7 +53,39 @@ fn child_id(parent_id: &str, unique_id: &str) -> String {
     format!("cec/{encoded}")
 }
 
-fn parent_context(parent_id: &str, label: &str) -> String {
+fn parent_context(
+    parent_id: &str,
+    label: &str,
+    external_rows: &[Value],
+    inputs: &[Selectable],
+) -> String {
+    let input_name = inputs
+        .iter()
+        .find(|input| input.id == parent_id)
+        .map(|input| input.name.trim())
+        .filter(|name| !name.is_empty());
+
+    if let Some(name) = input_name {
+        // Friendly names are more useful than HDMI port labels. If two
+        // physical inputs share a name, retain the port to keep their
+        // descendants distinguishable in the selector.
+        let duplicate_name = external_rows
+            .iter()
+            .filter_map(|row| row.get("id").and_then(Value::as_str))
+            .filter_map(|id| inputs.iter().find(|input| input.id == id))
+            .filter(|input| input.name.trim().eq_ignore_ascii_case(name))
+            .count()
+            > 1;
+        if !duplicate_name {
+            return name.to_owned();
+        }
+        if let Some(port) = parent_id.strip_prefix("HDMI_") {
+            if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+                return format!("{name} (HDMI {port})");
+            }
+        }
+    }
+
     if let Some(port) = parent_id.strip_prefix("HDMI_") {
         if !port.is_empty() && port.chars().all(|ch| ch.is_ascii_alphanumeric()) {
             return format!("HDMI {port}");
@@ -102,7 +134,7 @@ pub(crate) fn append_children(
             .and_then(Value::as_str)
             .or_else(|| external_parent.get("label").and_then(Value::as_str))
             .unwrap_or(parent_input_id);
-        let context = parent_context(parent_input_id, label);
+        let context = parent_context(parent_input_id, label, external_rows, inputs);
         let top_level_names: HashSet<String> = external_rows
             .iter()
             .filter_map(|row| row.get("label").and_then(Value::as_str))
@@ -158,7 +190,7 @@ pub(crate) fn append_children(
             {
                 continue;
             }
-            let display = format!("{name} · {context}");
+            let display = format!("{context} - {name}");
             if !valid_name(&display) {
                 continue;
             }
@@ -232,13 +264,13 @@ mod tests {
             ]
         })];
         let mut inputs = vec![
-            Selectable::new("HDMI_2", "HDMI 2"),
+            Selectable::new("HDMI_2", "Dragon"),
             Selectable::new("CEC_DRAGON", "DRAGON"),
         ];
         let mut map = HashMap::new();
         append_children(&external, &eim, &mut inputs, &mut map);
         assert!(inputs.iter().any(|i| i.name == "DRAGON"));
-        assert!(inputs.iter().any(|i| i.name == "p3i · HDMI 2"));
+        assert!(inputs.iter().any(|i| i.name == "Dragon - p3i"));
         assert_eq!(inputs.len(), 3);
         assert_eq!(map.len(), 1);
     }
@@ -260,7 +292,7 @@ mod tests {
         let mut map = HashMap::new();
         append_children(&external, &eim, &mut inputs, &mut map);
 
-        assert!(inputs.iter().any(|input| input.name == "p3i · HDMI 2"));
+        assert!(inputs.iter().any(|input| input.name == "p3i - HDMI 2"));
         let selection = map
             .values()
             .find(|selection| selection.unique_id == "4")
@@ -268,6 +300,36 @@ mod tests {
         assert_eq!(selection.parent_input_id, "HDMI_2");
         assert_eq!(selection.parent_app_id, "com.webos.app.hdmi2");
         assert_eq!(selection.unique_id, "4");
+    }
+
+    #[test]
+    fn duplicate_parent_friendly_names_keep_the_hdmi_port_in_child_labels() {
+        let external = vec![
+            json!({"id":"HDMI_2","label":"HDMI 2"}),
+            json!({"id":"HDMI_3","label":"HDMI 3"}),
+        ];
+        let eim = vec![
+            json!({"id":"hdmi2","inputId":"HDMI_2","label":"HDMI 2","subList":[
+                {"osdName":"p3i","uniqueId":4,"depth":2}
+            ]}),
+            json!({"id":"hdmi3","inputId":"HDMI_3","label":"HDMI 3","subList":[
+                {"osdName":"Fire Cube","uniqueId":5,"depth":2}
+            ]}),
+        ];
+        let mut inputs = vec![
+            Selectable::new("HDMI_2", "Dragon"),
+            Selectable::new("HDMI_3", "Dragon"),
+        ];
+        let mut map = HashMap::new();
+        append_children(&external, &eim, &mut inputs, &mut map);
+
+        assert!(inputs.iter().any(|input| input.name == "Dragon (HDMI 2) - p3i"));
+        assert!(inputs.iter().any(|input| input.name == "Dragon (HDMI 3) - Fire Cube"));
+        assert_eq!(map.len(), 2);
+        assert_ne!(
+            map.get(&child_id("HDMI_2", "4")).unwrap().parent_input_id,
+            map.get(&child_id("HDMI_3", "5")).unwrap().parent_input_id
+        );
     }
 
     #[test]
