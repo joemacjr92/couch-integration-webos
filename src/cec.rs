@@ -153,12 +153,16 @@ pub(crate) fn append_children(
             let Some(_depth) = child.get("depth").and_then(Value::as_u64) else {
                 continue;
             };
-            let name = child
-                .get("osdName")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|name| valid_name(name))
-                .unwrap_or(unique_id.as_str());
+            let name = match child.get("osdName").and_then(Value::as_str) {
+                Some(name) => {
+                    let name = name.trim();
+                    if !valid_name(name) {
+                        continue;
+                    }
+                    name
+                }
+                None => unique_id.as_str(),
+            };
             let child_identity = identity(child);
 
             // A depth-one EIM entry with a name already present in the TV's
