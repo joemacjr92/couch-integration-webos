@@ -314,7 +314,9 @@ fn pointer_probe(
             .map_err(|_| Error::Transport)?;
         match pointer.read() {
             Ok(Message::Pong(reply)) if reply.as_ref() == payload.as_slice() => return Ok(()),
-            Ok(Message::Ping(_)) => pointer.flush().map_err(|_| Error::Transport)?,
+            // A TV-initiated Ping is itself proof that the peer is alive. The
+            // read queued its automatic Pong; flush it before sending the key.
+            Ok(Message::Ping(_)) => return pointer.flush().map_err(|_| Error::Transport),
             Ok(Message::Pong(_)) => {}
             Ok(Message::Close(_)) => return Err(Error::Transport),
             Ok(_) => {}
@@ -501,10 +503,12 @@ impl WebOsTv {
             .pointer_last_activity
             .is_some_and(|last| last.elapsed() >= POINTER_PROBE_AFTER)
         {
+            self.next += 1;
+            let nonce = self.next;
             let healthy = self
                 .pointer
                 .as_mut()
-                .is_some_and(|pointer| pointer_probe(pointer, self.next).is_ok());
+                .is_some_and(|pointer| pointer_probe(pointer, nonce, POINTER_PROBE_TIMEOUT).is_ok());
             if !healthy {
                 self.pointer = None;
                 self.pointer_last_activity = None;
