@@ -493,7 +493,7 @@ fn every_pairing_scenario_passes_the_shared_admission_harness() {
     );
 }
 
-fn configure_paired_tv(tv: &FakeTv) -> (Package<'static>, couch_plugin::testing::Host<'static>) {
+fn configure_paired_tv(tv: &FakeTv) -> (Package, couch_plugin::host::Host) {
     let package = Package::new(adapter());
     let mut pairing = package.host();
     let (_session, first) = pairing.pair_start(tv.settings(), None).unwrap();
