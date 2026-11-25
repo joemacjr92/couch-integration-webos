@@ -33,6 +33,7 @@ const CEC_EIM_STATUS: &str = "ssap://com.webos.service.eim/getAllInputStatus";
 const CEC_LAUNCH_SETTLE: Duration = Duration::from_millis(2500);
 
 mod cec;
+mod pointer_diagnostics;
 
 fn safe_label(value: &Value) -> Option<&str> {
     value
@@ -490,6 +491,7 @@ impl WebOsTv {
     }
 
     fn button(&mut self, name: &str) -> Result<()> {
+        pointer_diagnostics::record(&format!("button start name={name}"));
         // The Couch client is synchronous and is not shared between threads,
         // so it cannot run Home Assistant's background pointer-socket reader.
         // Before reusing a socket that has been idle, verify it with a
@@ -501,27 +503,53 @@ impl WebOsTv {
         {
             self.next += 1;
             let nonce = self.next;
-            let healthy = self.pointer.as_mut().is_some_and(|pointer| {
-                pointer_probe(pointer, nonce, POINTER_PROBE_TIMEOUT).is_ok()
-            });
+            let probe_started = Instant::now();
+            let probe_result = self
+                .pointer
+                .as_mut()
+                .map(|pointer| pointer_probe(pointer, nonce, POINTER_PROBE_TIMEOUT))
+                .unwrap_or(Err(Error::Transport));
+            pointer_diagnostics::record(&format!(
+                "probe result={:?} elapsed_ms={}",
+                probe_result,
+                probe_started.elapsed().as_millis()
+            ));
+            let healthy = probe_result.is_ok();
             if !healthy {
+                pointer_diagnostics::record("discarding pointer socket after failed probe");
                 self.pointer = None;
                 self.pointer_last_activity = None;
             }
         }
 
         if self.pointer.is_none() {
+            let request_started = Instant::now();
+            pointer_diagnostics::record("requesting replacement pointer socket over SSAP");
             let response = self.request(
                 "ssap://com.webos.service.networkinput/getPointerInputSocket",
                 json!({}),
-            )?;
+            );
+            pointer_diagnostics::record(&format!(
+                "SSAP pointer socket request result={} elapsed_ms={}",
+                if response.is_ok() { "ok" } else { "error" },
+                request_started.elapsed().as_millis()
+            ));
+            let response = response?;
             let raw = response["socketPath"].as_str().ok_or(Error::Protocol)?;
             let (pointer, host, port) = endpoint(raw)?;
             let (control, own_host, own_port) = endpoint(&self.url)?;
             if host != own_host || port != own_port || pointer.scheme() != control.scheme() {
                 return Err(Error::Protocol);
             }
-            self.pointer = Some(connect_socket(raw, self.pin.clone(), IO_TIMEOUT)?);
+            let connect_started = Instant::now();
+            pointer_diagnostics::record("connecting pointer WebSocket");
+            let pointer = connect_socket(raw, self.pin.clone(), IO_TIMEOUT);
+            pointer_diagnostics::record(&format!(
+                "pointer WebSocket connect result={} elapsed_ms={}",
+                if pointer.is_ok() { "ok" } else { "error" },
+                connect_started.elapsed().as_millis()
+            ));
+            self.pointer = Some(pointer?);
         }
 
         let sent = {
@@ -538,10 +566,12 @@ impl WebOsTv {
             // A failed write has an uncertain delivery outcome. Drop the
             // socket, report the failure, and let the next command reconnect;
             // never replay a button that may already have reached the TV.
+            pointer_diagnostics::record("pointer button send failed; dropping socket");
             self.pointer = None;
             self.pointer_last_activity = None;
             return Err(Error::Transport);
         }
+        pointer_diagnostics::record(&format!("pointer button send succeeded name={name}"));
         self.pointer_last_activity = Some(Instant::now());
         Ok(())
     }
@@ -603,6 +633,7 @@ impl DeviceClient for WebOsTv {
 
     fn connect_with(settings: &Settings, credential: Option<&Credential>) -> SdkResult<Self> {
         settings.validate()?;
+        pointer_diagnostics::reset();
         let secure = endpoint(&settings.url)
             .map(|(url, _, _)| url.scheme() == "wss")
             .map_err(SdkError::from)?;
