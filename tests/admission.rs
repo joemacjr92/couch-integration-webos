@@ -185,11 +185,13 @@ fn serve(
                 .into(),
         ))
         .unwrap();
+    let mut subscription_ids = std::collections::HashMap::<String, String>::new();
     while let Some(request) = receive(&mut socket) {
         let Some(uri) = request["uri"].as_str() else {
             continue;
         };
         log.lock().unwrap().push(uri.into());
+        let is_subscription = request["type"] == "subscribe";
         let payload = match uri {
             "ssap://audio/getStatus" if request["type"] == "subscribe" => {
                 json!({"returnValue": true, "mute": false})
@@ -206,7 +208,7 @@ fn serve(
                 json!({"returnValue": true, "state": "Active"})
             }
             "ssap://audio/getVolume" => {
-                json!({"returnValue": true, "volume": 37, "mute": false})
+                json!({"returnValue": true, "volume": 62})
             }
             "ssap://com.webos.applicationManager/getForegroundAppInfo" => {
                 json!({"returnValue": true, "appId": "HDMI_1", "appName": "Game console"})
@@ -242,6 +244,36 @@ fn serve(
             }
             _ => json!({"returnValue": false}),
         };
+
+        if is_subscription {
+            subscription_ids.insert(uri.to_owned(), request["id"].as_str().unwrap().to_owned());
+        } else if uri == "ssap://audio/volumeUp" {
+            // Deliver unsolicited audio updates before the ordinary command
+            // response. The client must route both subscription IDs without
+            // allowing either notification to satisfy the pending request.
+            for (subscription_uri, notification) in [
+                (
+                    "ssap://audio/getStatus",
+                    json!({"mute": true}),
+                ),
+                (
+                    "ssap://audio/getVolume",
+                    json!({"volumeStatus": {"volume": 62}}),
+                ),
+            ] {
+                if let Some(id) = subscription_ids.get(subscription_uri) {
+                    socket
+                        .send(Message::Text(
+                            json!({"id": id, "type": "response", "payload": notification})
+                                .to_string()
+                                .into(),
+                        ))
+                        .unwrap();
+                }
+            }
+        } else if uri == "ssap://audio/setMute" {
+            log.lock().unwrap().push(format!("mute:{}", request["payload"]["mute"]));
+        }
         reply(&mut socket, &request, payload);
     }
 }
@@ -267,10 +299,11 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
         .unwrap();
     host.command("volume-up").unwrap();
     host.command("up").unwrap();
+    host.command("mute").unwrap();
     tv.wait_for("pointer:UP");
     let status = host.status().unwrap();
     assert_eq!(status.on, Some(true));
-    assert_eq!(status.volume, Some(37));
+    assert_eq!(status.volume, Some(62));
     assert_eq!(status.muted, Some(false));
     assert_eq!(status.input.as_deref(), Some("HDMI_1"));
     assert_eq!(status.sound_output.as_deref(), Some("external_arc"));
@@ -294,6 +327,9 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
             "ssap://audio/volumeUp",
             "ssap://com.webos.service.networkinput/getPointerInputSocket",
             "pointer:UP",
+            "ssap://audio/getVolume",
+            "ssap://audio/setMute",
+            "mute:false",
             "ssap://com.webos.service.tvpower/power/getPowerState",
             "ssap://audio/getVolume",
             "ssap://com.webos.applicationManager/getForegroundAppInfo",
@@ -307,9 +343,6 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
         ]
     );
 
-    // Keep the required package-startup test shape visible from the first
-    // commit; full conformance/failure/timeout/spike fixtures are next.
-    drop(testing::Package::new(adapter()));
     drop(session);
 }
 
