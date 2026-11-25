@@ -17,6 +17,19 @@ use tungstenite::{Error as WsError, Message, WebSocket};
 const READ_POLL: std::time::Duration = std::time::Duration::from_millis(50);
 const COMMAND_CAPACITY: usize = 1;
 
+trait SetReadTimeout {
+    fn set_read_timeout(&self, timeout: std::time::Duration) -> io::Result<()>;
+}
+
+impl SetReadTimeout for Socket {
+    fn set_read_timeout(&self, timeout: std::time::Duration) -> io::Result<()> {
+        match self {
+            Socket::Plain(stream) => stream.set_read_timeout(Some(timeout)),
+            Socket::Tls(stream) => stream.sock.set_read_timeout(Some(timeout)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WorkerError {
     InvalidButton,
