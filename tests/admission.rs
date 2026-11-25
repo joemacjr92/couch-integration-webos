@@ -12,7 +12,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     thread,
@@ -27,6 +27,20 @@ fn adapter() -> Adapter<'static> {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct FakeTvOptions {
+    reject_audio_subscriptions: bool,
+    cec: CecScenario,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum CecScenario {
+    #[default]
+    None,
+    DisappearsBeforeSelection,
+    WrongSelectionAfterLaunch,
+}
+
 struct FakeTv {
     address: std::net::SocketAddr,
     log: Arc<Mutex<Vec<String>>>,
@@ -36,16 +50,21 @@ struct FakeTv {
 
 impl FakeTv {
     fn start(scenario: PairingScenario) -> Self {
-        Self::start_with_disconnect(scenario, None)
+        Self::start_with_options(scenario, FakeTvOptions::default())
+    }
+
+    fn start_with_options(scenario: PairingScenario, options: FakeTvOptions) -> Self {
+        Self::start_configured(scenario, None, options)
     }
 
     fn start_disconnect_after_subscription(scenario: PairingScenario, uri: &'static str) -> Self {
-        Self::start_with_disconnect(scenario, Some(uri))
+        Self::start_configured(scenario, Some(uri), FakeTvOptions::default())
     }
 
-    fn start_with_disconnect(
+    fn start_configured(
         scenario: PairingScenario,
         disconnect_after_subscription: Option<&'static str>,
+        options: FakeTvOptions,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -54,6 +73,8 @@ impl FakeTv {
         let stop = Arc::new(AtomicBool::new(false));
         let shared_log = log.clone();
         let shared_stop = stop.clone();
+        let eim_calls = Arc::new(AtomicUsize::new(0));
+        let shared_eim_calls = eim_calls.clone();
         let thread = thread::spawn(move || {
             let mut clients = Vec::new();
             while !shared_stop.load(Ordering::SeqCst) {
@@ -61,6 +82,7 @@ impl FakeTv {
                     Ok((stream, _)) => {
                         stream.set_nonblocking(false).unwrap();
                         let log = shared_log.clone();
+                        let eim_calls = shared_eim_calls.clone();
                         clients.push(thread::spawn(move || {
                             serve(
                                 stream,
@@ -68,6 +90,8 @@ impl FakeTv {
                                 scenario,
                                 address,
                                 disconnect_after_subscription,
+                                options,
+                                eim_calls,
                             )
                         }));
                     }
@@ -143,6 +167,8 @@ fn serve(
     scenario: PairingScenario,
     address: std::net::SocketAddr,
     disconnect_after_subscription: Option<&'static str>,
+    options: FakeTvOptions,
+    eim_calls: Arc<AtomicUsize>,
 ) {
     let Ok(mut socket) = tungstenite::accept(stream) else {
         return;
@@ -218,10 +244,18 @@ fn serve(
         }
         let payload = match uri {
             "ssap://audio/getStatus" if request["type"] == "subscribe" => {
-                json!({"returnValue": true, "mute": false})
+                if options.reject_audio_subscriptions {
+                    json!({"returnValue": false})
+                } else {
+                    json!({"returnValue": true, "mute": false})
+                }
             }
             "ssap://audio/getVolume" if request["type"] == "subscribe" => {
-                json!({"returnValue": true, "volumeStatus": {"volume": 37}})
+                if options.reject_audio_subscriptions {
+                    json!({"returnValue": false})
+                } else {
+                    json!({"returnValue": true, "volumeStatus": {"volume": 37}})
+                }
             }
             "ssap://audio/volumeUp" => json!({"returnValue": true}),
             "ssap://com.webos.service.networkinput/getPointerInputSocket" => json!({
@@ -230,6 +264,9 @@ fn serve(
             }),
             "ssap://com.webos.service.tvpower/power/getPowerState" => {
                 json!({"returnValue": true, "state": "Active"})
+            }
+            "ssap://audio/getVolume" if options.reject_audio_subscriptions => {
+                json!({"returnValue": true, "volume": 37})
             }
             "ssap://audio/getVolume" => json!({"returnValue": true}),
             "ssap://audio/setMute" => json!({"returnValue": true}),
@@ -250,20 +287,37 @@ fn serve(
                     {"id": "HDMI_2", "label": "Blu-ray"}
                 ]
             }),
-            "ssap://com.webos.service.eim/getAllInputStatus" => json!({
-                "returnValue": true,
-                "devices": [{
-                    "id": "HDMI_2",
-                    "appId": "com.webos.app.hdmi2",
-                    "label": "Blu-ray",
-                    "lastUniqueId": last_unique_id,
-                    "subList": [{
-                        "osdName": "p3i",
-                        "uniqueId": 4,
-                        "depth": 2
+            "ssap://com.webos.service.eim/getAllInputStatus" => {
+                let call = eim_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                let child_present = match options.cec {
+                    CecScenario::None => true,
+                    CecScenario::DisappearsBeforeSelection => call == 1,
+                    CecScenario::WrongSelectionAfterLaunch => call <= 2,
+                };
+                let reported_last_unique_id = match options.cec {
+                    CecScenario::WrongSelectionAfterLaunch if call >= 3 => "5",
+                    _ => last_unique_id.as_str(),
+                };
+                let (parent_label, child_name) = match options.cec {
+                    CecScenario::None => ("Blu-ray", "p3i"),
+                    _ => ("Soundbar/Receiver", "Apple TV"),
+                };
+                let sub_list = if child_present {
+                    json!([{"osdName": child_name, "uniqueId": 4, "depth": 2}])
+                } else {
+                    json!([])
+                };
+                json!({
+                    "returnValue": true,
+                    "devices": [{
+                        "id": "HDMI_2",
+                        "appId": "com.webos.app.hdmi2",
+                        "label": parent_label,
+                        "lastUniqueId": reported_last_unique_id,
+                        "subList": sub_list
                     }]
-                }]
-            }),
+                })
+            },
             "ssap://com.webos.applicationManager/listLaunchPoints" => json!({
                 "returnValue": true,
                 "launchPoints": [
@@ -421,7 +475,6 @@ fn transport_disconnect_during_audio_subscription_fails_configuration() {
 }
 
 #[test]
-#[ignore = "slow shared pairing scenario; run explicitly when needed"]
 fn every_pairing_scenario_passes_the_shared_admission_harness() {
     testing_v3::pairing(
         adapter(),
@@ -432,6 +485,81 @@ fn every_pairing_scenario_passes_the_shared_admission_harness() {
             after: Request::status(),
         },
     );
+}
+
+
+fn configure_paired_tv(tv: &FakeTv) -> (Package<'static>, couch_plugin::testing::Host<'static>) {
+    let package = Package::new(adapter());
+    let mut pairing = package.host();
+    let (_session, first) = pairing.pair_start(tv.settings(), None).unwrap();
+    assert!(matches!(first, PairStep::Waiting { .. }));
+    let paired = pairing.pair_continue(None).unwrap();
+    let PairStep::Done { credential, .. } = paired else {
+        panic!("pairing did not finish: {paired:?}");
+    };
+    let mut host = package.host();
+    host.configure_with(tv.settings(), Some(&credential)).unwrap();
+    (package, host)
+}
+
+#[test]
+fn rejected_audio_subscriptions_do_not_prevent_normal_tv_operation() {
+    let tv = FakeTv::start_with_options(
+        PairingScenario::Paired,
+        FakeTvOptions {
+            reject_audio_subscriptions: true,
+            ..FakeTvOptions::default()
+        },
+    );
+    let (_package, mut host) = configure_paired_tv(&tv);
+    host.command("volume-up").unwrap();
+    let status = host.status().unwrap();
+
+    assert_eq!(status.on, Some(true));
+    assert_eq!(status.volume, Some(37));
+    assert!(status.muted.is_none());
+    let requests = tv.requests();
+    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://audio/getStatus").count(), 1);
+    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://audio/getVolume").count(), 2);
+    assert!(requests.iter().any(|uri| uri == "ssap://audio/volumeUp"));
+}
+
+#[test]
+fn stale_cec_child_is_not_launched_after_disappearing_from_tv_probe() {
+    let tv = FakeTv::start_with_options(
+        PairingScenario::Paired,
+        FakeTvOptions {
+            cec: CecScenario::DisappearsBeforeSelection,
+            ..FakeTvOptions::default()
+        },
+    );
+    let (_package, mut host) = configure_paired_tv(&tv);
+    let inputs = host.inputs().unwrap();
+    let child = inputs.iter().find(|input| input.name == "Soundbar/Receiver - Apple TV").unwrap();
+
+    assert!(host.command(&format!("input:{}", child.id)).is_err());
+    let requests = tv.requests();
+    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://com.webos.applicationManager/launch").count(), 0);
+    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://com.webos.service.eim/getAllInputStatus").count(), 2);
+}
+
+#[test]
+fn cec_selection_is_rejected_when_tv_reports_a_different_device_after_launch() {
+    let tv = FakeTv::start_with_options(
+        PairingScenario::Paired,
+        FakeTvOptions {
+            cec: CecScenario::WrongSelectionAfterLaunch,
+            ..FakeTvOptions::default()
+        },
+    );
+    let (_package, mut host) = configure_paired_tv(&tv);
+    let inputs = host.inputs().unwrap();
+    let child = inputs.iter().find(|input| input.name == "Soundbar/Receiver - Apple TV").unwrap();
+
+    assert!(host.command(&format!("input:{}", child.id)).is_err());
+    let requests = tv.requests();
+    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://com.webos.applicationManager/launch").count(), 1);
+    assert_eq!(requests.iter().filter(|uri| *uri == "ssap://com.webos.service.eim/getAllInputStatus").count(), 3);
 }
 
 #[test]
