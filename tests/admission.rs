@@ -208,9 +208,8 @@ fn serve(
             "ssap://com.webos.service.tvpower/power/getPowerState" => {
                 json!({"returnValue": true, "state": "Active"})
             }
-            "ssap://audio/getVolume" => {
-                json!({"returnValue": true, "volume": 62})
-            }
+            "ssap://audio/getVolume" => json!({"returnValue": true}),
+            "ssap://audio/setMute" => json!({"returnValue": true}),
             "ssap://com.webos.applicationManager/getForegroundAppInfo" => {
                 json!({"returnValue": true, "appId": "HDMI_1", "appName": "Game console"})
             }
