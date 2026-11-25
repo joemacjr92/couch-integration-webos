@@ -336,3 +336,137 @@ Before acting:
 11. Do not merge, publish, rotate signing keys, reset feed history, or perform destructive device/package operations without explicit authorization.
 12. End each substantial task by updating the appropriate handoff with the decision, evidence, affected commit/PR, validation state, and unresolved follow-up—on the dedicated documentation branch, not accidentally in a feature/upstream PR.
 
+
+
+---
+
+# Current Status Addendum — 2026-11-25
+
+This addendum records the pointer WebSocket investigation and the current repository/PR state. Where earlier sections below describe older branch or PR states, this addendum takes precedence. Re-check GitHub before relying on any status in a later session.
+
+## Current repository and PR state
+
+- User fork: https://github.com/joemacjr92/couch-integration-webos
+- Upstream: https://github.com/Couch-OS/couch-integration-webos
+- Fork `main` currently points to `db5c7bca105782e11d414f833e64f45027a9d601`.
+- Upstream `main` currently points to `5560f66538a9d41e84ba33aa125a3aa55b4cad37`.
+- Upstream PR #6 remains the single upstream contribution covering the HDMI-CEC and functional/audio improvements described above: https://github.com/Couch-OS/couch-integration-webos/pull/6
+- Fork PR #11, “Continuously service the LG pointer WebSocket,” was squash-merged into the user's fork `main`: https://github.com/joemacjr92/couch-integration-webos/pull/11
+- PR #11 merge commit is the current fork `main` SHA above. This was a fork merge only; it did not change upstream.
+- Fork PR #10 (“Add pointer WebSocket recovery diagnostics”) and PR #8 (“Harden webOS pointer WebSocket recovery”) were also merged into fork `main`.
+- Fork PR #4 (native LG MUTE key) and PR #5 (GitHub Actions build/signing-key cutover preparation) were open at the last status check. Verify before acting.
+- The dedicated handoff branch is `docs/chat-handoff`. Keep this document updated on that branch, not on feature branches or upstream PR branches.
+
+## Pointer WebSocket investigation — two distinct approaches
+
+The two investigation branches are not duplicate implementations. They represent successive approaches to the same observed failure: navigation initially worked, but after an idle period the TV could stop responding to pointer-button commands while other integration functions remained available.
+
+### Earlier approach: `investigation/pointer-websocket-reliability`
+
+Purpose: detect a pointer connection that appears alive locally but is no longer useful, then discard and reacquire it.
+
+Work included:
+- Idle Ping/Pong probing (after approximately five seconds idle, with a bounded response wait).
+- Dropping and reacquiring the pointer socket when the probe failed.
+- Diagnostics to record socket acquisition, probes, sends, and failures.
+
+Key finding:
+- A successful Ping/Pong and successful local WebSocket write did not prove that the LG TV was processing navigation commands. Real-device testing produced false-positive health checks: the probe and local send could succeed while navigation was ignored.
+- This approach was useful diagnostically but did not solve the underlying idle servicing problem.
+
+### Replacement approach: `investigation/pointer-websocket-worker-phase1`
+
+Purpose: continuously service the pointer WebSocket instead of periodically probing a socket that is otherwise left unread.
+
+Production implementation:
+- Added `src/pointer_worker.rs`.
+- A dedicated worker thread exclusively owns and continuously reads the pointer WebSocket, including while idle.
+- The worker services Ping/Pong/Close frames and accepts button commands through a bounded command channel.
+- The main thread retains ownership of the synchronous Couch device client and SSAP connection. Do not share the synchronous `DeviceClient` across threads.
+- Button delivery is not blindly replayed when the result is uncertain. A command known not to have been accepted can be retried after reconnect; an ambiguous transport result is returned as an error without replay.
+- Worker shutdown and transport-loss paths are handled explicitly.
+- `src/pointer_diagnostics.rs` was synchronized for writes from both the main and worker threads.
+
+This worker implementation supersedes the periodic idle-probe design. Do not combine both approaches or reintroduce the old probe as a parallel health mechanism without new evidence.
+
+### Merge and CI evidence
+
+- Source branch: `investigation/pointer-websocket-worker-phase1`
+- Source head before merge: `529c94093c0a6bae37c90f3fb5741ce7bd41a509`
+- Fork PR #11: https://github.com/joemacjr92/couch-integration-webos/pull/11
+- PR #11 was squash-merged into the user's fork `main` on 2026-11-25.
+- CI run #83: https://github.com/joemacjr92/couch-integration-webos/actions/runs/45682505593
+- Verified on that run: `cargo fmt -- --check`, `cargo test --locked --all-targets`, pointer-worker tests, signed feed-history validation, and repository public-key validation all passed.
+- ARMv7 build was skipped by that workflow. Do not describe this run as an ARMv7 build or package validation.
+- No upstream merge occurred. PR #11 targeted the user's fork's `main`, not Couch-OS upstream.
+
+## Physical LG TV validation of the worker
+
+The user deployed the worker implementation and supplied the following evidence:
+
+- Initial ENTER presses successfully acquired the pointer socket, connected the worker, and sent button frames.
+- During an approximately ten-minute idle period, the worker continued receiving peer Ping frames. There were no logged reconnects, worker restarts, or transport errors.
+- The first RIGHT press after that idle period was reported by the user as registering on the TV.
+- Sustained RIGHT, LEFT, and ENTER presses subsequently worked.
+
+This is strong evidence that continuous socket servicing addresses the previously observed idle-navigation failure. It is not a universal compatibility claim or a completed long-duration soak test. A 30-minute idle test followed by a first navigation press was suggested as additional confidence, but no result for that longer test is recorded here.
+
+## Pointer diagnostics and device access
+
+- Diagnostics are written to `/tmp/couch-webos-pointer.log` on the CouchOS device.
+- The log is bounded (64 KiB), timestamped, reset on integration process start, and does not record credentials or command payloads.
+- The device's `/tmp` is ephemeral tmpfs. The log will not survive a reboot/process lifecycle as durable storage.
+- CouchOS core discards plugin stderr and reserves stdout for protocol traffic. Do not use `println!` or `eprintln!` as a diagnostic channel.
+- The user's test remote was accessed over SSH at `10.0.0.25` using their existing local key. Do not assume this address applies to another environment.
+- Example log commands used by the user:
+  - `ssh -i ~/.ssh/id_ed25519_ha100 root@10.0.0.25 'tail -n 50 -f /tmp/couch-webos-pointer.log'`
+  - `ssh -i ~/.ssh/id_ed25519_ha100 root@10.0.0.25 'rm -f /tmp/couch-webos-pointer.log'`
+- Diagnostics were left enabled in the implementation at the time of this handoff. A default-off setting/toggle was discussed but not implemented. The plugin manifest's existing settings schema did not expose an environment-variable mechanism; inspect the SDK's actual settings schema before proposing a toggle.
+
+## Long-press / repeat investigation — separate from pointer idle recovery
+
+The user reported an error on the remote display when holding RIGHT for fast-forward in an app, although commands continued working afterward. The user suspects the error may originate in CouchOS rather than the webOS integration.
+
+Evidence from the CouchOS code inspected:
+- `ui/couch-gui/src/keypad.rs` generates software key-repeat events: repeat begins after roughly 400 ms and repeats at roughly 70 ms intervals.
+- `ui/couch-gui/src/tv_plugin.rs` sends a key request for each Tap/Repeat event, then performs status and, where supported, Inputs and Apps requests before rebuilding the UI state.
+- `daemon/couch-confd/src/plugins.rs` serializes requests per plugin connection and uses a 250 ms lock-wait allowance before returning a Busy error.
+- These code paths make request contention a plausible area to investigate, but do not prove the cause of the remote-screen error.
+- The user's captured webOS pointer log showed each observed RIGHT/LEFT/ENTER event reaching the integration and each corresponding worker send succeeding. No worker restart, pointer reconnect, or transport error was recorded during that trace.
+- Therefore, the captured integration log does not show an integration-level failure. It does not prove every frame was processed by the TV.
+- The user chose to raise the issue with the CouchOS developer first. Do not change webOS integration timing or add throttling/retry behavior based only on this symptom. Revisit only if CouchOS investigation identifies an integration-side requirement or new logs provide evidence.
+
+## Upstream contribution plan for the WebSocket worker
+
+The worker implementation does not inherently depend on upstream PR #6. Do not stack the WebSocket contribution on PR #6 or wait for PR #6 to merge solely because the work was developed on a fork branch that already contained other changes.
+
+However, do not open an upstream PR directly from `investigation/pointer-websocket-worker-phase1`. That branch carries substantial fork history and unrelated tree changes. GitHub comparisons showed it was far ahead of upstream and would produce a noisy PR.
+
+Agreed direction:
+1. Start a new, clean contribution branch from the current `Couch-OS/couch-integration-webos:main`.
+2. Port only the pointer-worker implementation and the required pointer integration changes.
+3. Include only supporting diagnostics if they are justified and suitable for upstream; reconsider always-on diagnostic logging before submission.
+4. Carefully reconcile `src/lib.rs` with upstream's current version. Do not copy the entire investigation-branch file over upstream because it includes unrelated changes, including code associated with the separate functional/CEC work.
+5. Keep the final diff limited to the worker, necessary pointer lifecycle/button routing, tests, and any justified documentation.
+6. Run formatting, locked all-target tests, and the relevant admission/package checks. State explicitly whether ARMv7 was built or skipped.
+7. Open a separate PR targeting upstream `main`. PR #6 remains independent and untouched.
+
+Before creating the clean branch or porting code, inspect the exact commits and three-way file differences between upstream `main`, the PR #6 contribution branch, and the worker branch. In particular, inspect overlapping `src/lib.rs` hunks rather than assuming the worker changes are cleanly cherry-pickable.
+
+## Branch distinctions at a glance
+
+| Branch | Role | Current interpretation |
+|---|---|---|
+| `investigation/pointer-websocket-reliability` | Initial idle Ping/Pong detection and recovery experiment | Historical approach; probe could give false confidence |
+| `investigation/pointer-websocket-worker-phase1` | Dedicated continuously-reading pointer WebSocket worker | Production implementation; merged into fork `main` via PR #11 |
+| `upstream/webos-functional-improvements` | Separate CEC/audio/functional contribution | Head for upstream PR #6; not a prerequisite for the worker |
+| `docs/chat-handoff` | Continuity documentation | Update this branch for future-session handoffs |
+
+## Updated first checks for the next session
+
+1. Read this entire handoff, including this addendum.
+2. Check the live fork `main`, upstream `main`, and PR #6 state.
+3. Confirm PR #11 remains merged into the fork and inspect the current worker implementation on fork `main`.
+4. Check whether the user completed the longer idle soak test; do not assume it happened.
+5. If preparing an upstream worker PR, begin from upstream `main` and port only the WebSocket worker changes. Do not use the investigation branch as a direct PR head.
+6. Keep the long-press/CouchOS issue separate unless new evidence connects it to the webOS integration.
