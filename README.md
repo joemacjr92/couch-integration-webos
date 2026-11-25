@@ -16,7 +16,7 @@ The integration uses secure webOS pairing. When you first connect, approve Couch
 
 ### HDMI-CEC inputs
 
-The input selector includes the TV's physical inputs and, when the TV reports them, devices connected through HDMI-CEC. CEC child entries are labelled with their parent input's friendly name (for example, `Blu-ray - p3i`). Selecting a child launches it through the corresponding HDMI input.
+The input selector includes the TV's physical inputs and, when the TV reports them, devices connected through HDMI-CEC. CEC child entries are labelled with their parent input's friendly name (for example, `Soundbar/Receiver - Apple TV`). Selecting a child launches it through the corresponding HDMI input.
 
 CEC discovery depends on information provided by the TV. If the TV does not report a downstream device, that device will not appear in the selector.
 
