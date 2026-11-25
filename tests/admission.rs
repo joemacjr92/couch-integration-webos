@@ -516,7 +516,8 @@ fn rejected_audio_subscriptions_do_not_prevent_normal_tv_operation() {
     );
     let (package, credential) = pair_tv(&tv);
     let mut host = package.host();
-    host.configure_with(tv.settings(), Some(&credential)).unwrap();
+    host.configure_with(tv.settings(), Some(&credential))
+        .unwrap();
     host.command("volume-up").unwrap();
     let status = host.status().unwrap();
 
@@ -552,7 +553,8 @@ fn stale_cec_child_is_not_launched_after_disappearing_from_tv_probe() {
     );
     let (package, credential) = pair_tv(&tv);
     let mut host = package.host();
-    host.configure_with(tv.settings(), Some(&credential)).unwrap();
+    host.configure_with(tv.settings(), Some(&credential))
+        .unwrap();
     let inputs = host.inputs().unwrap();
     let child = inputs
         .iter()
@@ -588,7 +590,8 @@ fn cec_selection_is_rejected_when_tv_reports_a_different_device_after_launch() {
     );
     let (package, credential) = pair_tv(&tv);
     let mut host = package.host();
-    host.configure_with(tv.settings(), Some(&credential)).unwrap();
+    host.configure_with(tv.settings(), Some(&credential))
+        .unwrap();
     let inputs = host.inputs().unwrap();
     let child = inputs
         .iter()
