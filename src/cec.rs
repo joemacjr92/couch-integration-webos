@@ -323,8 +323,12 @@ mod tests {
         let mut map = HashMap::new();
         append_children(&external, &eim, &mut inputs, &mut map);
 
-        assert!(inputs.iter().any(|input| input.name == "Dragon (HDMI 2) - p3i"));
-        assert!(inputs.iter().any(|input| input.name == "Dragon (HDMI 3) - Fire Cube"));
+        assert!(inputs
+            .iter()
+            .any(|input| input.name == "Dragon (HDMI 2) - p3i"));
+        assert!(inputs
+            .iter()
+            .any(|input| input.name == "Dragon (HDMI 3) - Fire Cube"));
         assert_eq!(map.len(), 2);
         assert_ne!(
             map.get(&child_id("HDMI_2", "4")).unwrap().parent_input_id,
