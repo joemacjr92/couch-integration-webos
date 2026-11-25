@@ -329,7 +329,7 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
     assert_eq!(inputs[0].name, "Game console");
     let cec_input = inputs
         .iter()
-        .find(|input| input.name == "p3i · HDMI 2")
+        .find(|input| input.name == "Blu-ray - p3i")
         .expect("CEC descendant is exposed as an input selector");
     host.command(&format!("input:{}", cec_input.id)).unwrap();
     let apps = host.apps().unwrap();
