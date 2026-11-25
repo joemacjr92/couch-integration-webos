@@ -38,7 +38,11 @@ pub(crate) fn record(message: &str) {
         return;
     };
 
-    if file.metadata().map(|metadata| metadata.len() > MAX_LOG_BYTES).unwrap_or(false) {
+    if file
+        .metadata()
+        .map(|metadata| metadata.len() > MAX_LOG_BYTES)
+        .unwrap_or(false)
+    {
         if file.set_len(0).is_err() {
             return;
         }
