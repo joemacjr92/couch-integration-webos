@@ -382,7 +382,7 @@ mod tests {
                 {"osdName":"String depth","uniqueId":2,"depth":"2"},
                 {"osdName":"Control\nname","uniqueId":3,"depth":2},
                 {"osdName":"Valid child","uniqueId":4,"depth":2}
-            ]})
+            ]}),
         ];
         let mut inputs = vec![Selectable::new("HDMI_2", "HDMI 2")];
         let mut selections = HashMap::new();
@@ -433,12 +433,18 @@ mod tests {
         ));
 
         assert_eq!(
-            last_unique_id(&json!({"devices":[{"id":"HDMI_2","lastUniqueId":4}]}), "HDMI_2")
-                .as_deref(),
+            last_unique_id(
+                &json!({"devices":[{"id":"HDMI_2","lastUniqueId":4}]}),
+                "HDMI_2"
+            )
+            .as_deref(),
             Some("4")
         );
         assert_eq!(
-            last_unique_id(&json!({"devices":[{"id":"HDMI_2","lastUniqueId":{}}]}), "HDMI_2"),
+            last_unique_id(
+                &json!({"devices":[{"id":"HDMI_2","lastUniqueId":{}}]}),
+                "HDMI_2"
+            ),
             None
         );
         assert_eq!(last_unique_id(&json!({"devices":[]}), "HDMI_2"), None);
@@ -460,5 +466,4 @@ mod tests {
         assert_eq!(inputs.len(), 128);
         assert!(selections.is_empty());
     }
-
 }
