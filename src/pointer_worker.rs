@@ -74,7 +74,9 @@ impl PointerWorker {
     fn button(&self, name: &str) -> Result<(), WorkerError> {
         if name.is_empty()
             || name.len() > 32
-            || !name.bytes().all(|byte| byte.is_ascii_uppercase() || byte == b'-')
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte == b'-')
         {
             return Err(WorkerError::InvalidButton);
         }
@@ -236,7 +238,10 @@ mod tests {
         let (client, _server) = connected_pair();
         let worker = PointerWorker::spawn(client).unwrap();
 
-        assert_eq!(worker.button("ENTER\nname:HOME"), Err(WorkerError::InvalidButton));
+        assert_eq!(
+            worker.button("ENTER\nname:HOME"),
+            Err(WorkerError::InvalidButton)
+        );
     }
 
     #[test]
