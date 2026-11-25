@@ -72,6 +72,21 @@ CEC discovery is best-effort: if EIM status cannot be read, the physical
 input list remains available. The selector is refreshed when Couch requests
 its inputs; this package does not add background polling.
 
+## Audio status subscriptions
+
+The integration subscribes to `ssap://audio/getStatus` for mute state and
+`ssap://audio/getVolume` for volume percentage. Subscription notifications
+are correlated by their SSAP message IDs and processed during normal
+synchronous WebSocket reads. The mute toggle uses the latest valid mute state
+observed on that connection; successful mute commands keep the local cache
+consistent.
+
+These subscriptions are best-effort and do not create a background receiver.
+Notifications are not consumed while the package is idle, and the integration
+cannot independently push status changes into Couch. See
+[`docs/audio-subscriptions.md`](docs/audio-subscriptions.md) for the protocol,
+cache behavior, and verification details.
+
 ## Build and test
 
 ```sh
