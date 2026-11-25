@@ -280,13 +280,19 @@ fn serve(
                 "returnValue": true,
                 "settings": {"pictureMode": "cinema"}
             }),
-            "ssap://tv/getExternalInputList" => json!({
-                "returnValue": true,
-                "devices": [
-                    {"id": "HDMI_1", "label": "Game console"},
-                    {"id": "HDMI_2", "label": "Blu-ray"}
-                ]
-            }),
+            "ssap://tv/getExternalInputList" => {
+                let parent_label = match options.cec {
+                    CecScenario::None => "Blu-ray",
+                    _ => "Soundbar/Receiver",
+                };
+                json!({
+                    "returnValue": true,
+                    "devices": [
+                        {"id": "HDMI_1", "label": "Game console"},
+                        {"id": "HDMI_2", "label": parent_label}
+                    ]
+                })
+            },
             "ssap://com.webos.service.eim/getAllInputStatus" => {
                 let call = eim_calls.fetch_add(1, Ordering::SeqCst) + 1;
                 let child_present = match options.cec {
