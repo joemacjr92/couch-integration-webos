@@ -240,7 +240,7 @@ fn serve(
         log.lock().unwrap().push(uri.into());
         let is_subscription = request["type"] == "subscribe";
         if is_subscription && disconnect_after_subscription == Some(uri) {
-            let _ = socket.close(None);
+            let _ = socket.get_mut().shutdown(std::net::Shutdown::Both);
             return;
         }
         let payload = match uri {
