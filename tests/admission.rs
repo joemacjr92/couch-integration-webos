@@ -191,6 +191,12 @@ fn serve(
         };
         log.lock().unwrap().push(uri.into());
         let payload = match uri {
+            "ssap://audio/getStatus" if request["type"] == "subscribe" => {
+                json!({"returnValue": true, "mute": false})
+            }
+            "ssap://audio/getVolume" if request["type"] == "subscribe" => {
+                json!({"returnValue": true, "volumeStatus": {"volume": 37}})
+            }
             "ssap://audio/volumeUp" => json!({"returnValue": true}),
             "ssap://com.webos.service.networkinput/getPointerInputSocket" => json!({
                 "returnValue": true,
