@@ -8,7 +8,6 @@
 use crate::Socket;
 use std::{
     io,
-    net::TcpStream,
     sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     thread::{self, JoinHandle},
 };
@@ -205,7 +204,7 @@ mod tests {
     use super::*;
     use crate::connect_socket;
     use std::{
-        net::{Shutdown, TcpListener},
+        net::{Shutdown, TcpListener, TcpStream},
         sync::{Arc, Mutex},
         thread,
         time::Duration,
