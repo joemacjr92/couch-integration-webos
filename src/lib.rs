@@ -484,7 +484,11 @@ impl WebOsTv {
         // The worker continuously services incoming frames while the main
         // thread remains the sole owner of DeviceClient and the SSAP socket.
         // If it is already known to have stopped, replace it before sending.
-        if self.pointer.as_ref().is_some_and(PointerWorker::is_finished) {
+        if self
+            .pointer
+            .as_ref()
+            .is_some_and(PointerWorker::is_finished)
+        {
             pointer_diagnostics::record("pointer worker already stopped; discarding it");
             self.pointer = None;
         }
@@ -492,16 +496,10 @@ impl WebOsTv {
             self.connect_pointer_worker()?;
         }
 
-        let result = self
-            .pointer
-            .as_ref()
-            .ok_or(Error::Transport)?
-            .button(name);
+        let result = self.pointer.as_ref().ok_or(Error::Transport)?.button(name);
         match result {
             Ok(()) => {
-                pointer_diagnostics::record(&format!(
-                    "pointer button send succeeded name={name}"
-                ));
+                pointer_diagnostics::record(&format!("pointer button send succeeded name={name}"));
                 Ok(())
             }
             Err(WorkerError::StoppedBeforeSend) => {
@@ -512,12 +510,7 @@ impl WebOsTv {
                 );
                 self.pointer = None;
                 self.connect_pointer_worker()?;
-                match self
-                    .pointer
-                    .as_ref()
-                    .ok_or(Error::Transport)?
-                    .button(name)
-                {
+                match self.pointer.as_ref().ok_or(Error::Transport)?.button(name) {
                     Ok(()) => {
                         pointer_diagnostics::record(&format!(
                             "pointer button send succeeded after safe reconnect name={name}"
