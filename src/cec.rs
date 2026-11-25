@@ -366,4 +366,99 @@ mod tests {
         assert!(contains_unique_id(&response, &selection, "4"));
         assert_eq!(last_unique_id(&response, "HDMI_2").as_deref(), Some("4"));
     }
+
+    #[test]
+    fn malformed_or_incomplete_discovery_rows_are_ignored_without_losing_valid_children() {
+        let external = vec![json!({"id":"HDMI_2","label":"HDMI 2"})];
+        let eim = vec![
+            json!({}),
+            json!({"id":"HDMI_9","appId":"hdmi9","subList":[
+                {"osdName":"Wrong parent","uniqueId":1,"depth":2}
+            ]}),
+            json!({"id":"HDMI_2","appId":"","subList":{}}),
+            json!({"id":"HDMI_2","appId":"hdmi2","subList":[
+                {},
+                {"osdName":"Missing depth","uniqueId":1},
+                {"osdName":"String depth","uniqueId":2,"depth":"2"},
+                {"osdName":"Control\nname","uniqueId":3,"depth":2},
+                {"osdName":"Valid child","uniqueId":4,"depth":2}
+            ]})
+        ];
+        let mut inputs = vec![Selectable::new("HDMI_2", "HDMI 2")];
+        let mut selections = HashMap::new();
+
+        append_children(&external, &eim, &mut inputs, &mut selections);
+
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[1].name, "HDMI 2 - Valid child");
+        assert_eq!(selections.len(), 1);
+        assert_eq!(
+            selections.values().next().unwrap(),
+            &CecSelection {
+                parent_input_id: "HDMI_2".into(),
+                parent_app_id: "hdmi2".into(),
+                unique_id: "4".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn eim_verification_is_parent_scoped_and_rejects_incomplete_responses() {
+        let selection = CecSelection {
+            parent_input_id: "HDMI_2".into(),
+            parent_app_id: "com.webos.app.hdmi2".into(),
+            unique_id: "4".into(),
+        };
+
+        assert!(!contains_unique_id(&json!({}), &selection, "4"));
+        assert!(!contains_unique_id(
+            &json!({"devices":[{"id":"HDMI_3","subList":[{"uniqueId":4}]}]}),
+            &selection,
+            "4"
+        ));
+        assert!(!contains_unique_id(
+            &json!({"devices":[{"id":"HDMI_2","subList":{}}]}),
+            &selection,
+            "4"
+        ));
+        assert!(!contains_unique_id(
+            &json!({"devices":[{"id":"HDMI_2","subList":[{"uniqueId":5}]}]}),
+            &selection,
+            "4"
+        ));
+        assert!(contains_unique_id(
+            &json!({"devices":[{"id":"HDMI_2","subList":[{"uniqueId":4}]}]}),
+            &selection,
+            "4"
+        ));
+
+        assert_eq!(
+            last_unique_id(&json!({"devices":[{"id":"HDMI_2","lastUniqueId":4}]}), "HDMI_2")
+                .as_deref(),
+            Some("4")
+        );
+        assert_eq!(
+            last_unique_id(&json!({"devices":[{"id":"HDMI_2","lastUniqueId":{}}]}), "HDMI_2"),
+            None
+        );
+        assert_eq!(last_unique_id(&json!({"devices":[]}), "HDMI_2"), None);
+    }
+
+    #[test]
+    fn child_discovery_respects_the_existing_input_limit() {
+        let external = vec![json!({"id":"HDMI_2","label":"HDMI 2"})];
+        let eim = vec![json!({"id":"HDMI_2","appId":"hdmi2","subList":[
+            {"osdName":"Overflow","uniqueId":4,"depth":2}
+        ]})];
+        let mut inputs: Vec<Selectable> = (0..128)
+            .map(|index| Selectable::new(&format!("INPUT_{index}"), "Existing input"))
+            .collect();
+        let mut selections = HashMap::new();
+
+        append_children(&external, &eim, &mut inputs, &mut selections);
+
+        assert_eq!(inputs.len(), 128);
+        assert!(selections.is_empty());
+    }
+
 }
