@@ -36,6 +36,20 @@ struct FakeTv {
 
 impl FakeTv {
     fn start(scenario: PairingScenario) -> Self {
+        Self::start_with_disconnect(scenario, None)
+    }
+
+    fn start_disconnect_after_subscription(
+        scenario: PairingScenario,
+        uri: &'static str,
+    ) -> Self {
+        Self::start_with_disconnect(scenario, Some(uri))
+    }
+
+    fn start_with_disconnect(
+        scenario: PairingScenario,
+        disconnect_after_subscription: Option<&'static str>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -50,7 +64,15 @@ impl FakeTv {
                     Ok((stream, _)) => {
                         stream.set_nonblocking(false).unwrap();
                         let log = shared_log.clone();
-                        clients.push(thread::spawn(move || serve(stream, log, scenario, address)));
+                        clients.push(thread::spawn(move || {
+                            serve(
+                                stream,
+                                log,
+                                scenario,
+                                address,
+                                disconnect_after_subscription,
+                            )
+                        }));
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5));
@@ -123,6 +145,7 @@ fn serve(
     log: Arc<Mutex<Vec<String>>>,
     scenario: PairingScenario,
     address: std::net::SocketAddr,
+    disconnect_after_subscription: Option<&'static str>,
 ) {
     let Ok(mut socket) = tungstenite::accept(stream) else {
         return;
@@ -193,6 +216,9 @@ fn serve(
         };
         log.lock().unwrap().push(uri.into());
         let is_subscription = request["type"] == "subscribe";
+        if is_subscription && disconnect_after_subscription == Some(uri) {
+            return;
+        }
         let payload = match uri {
             "ssap://audio/getStatus" if request["type"] == "subscribe" => {
                 json!({"returnValue": true, "mute": false})
@@ -366,6 +392,34 @@ fn pairs_then_controls_a_fake_tv_through_the_package_process() {
             "ssap://com.webos.service.apiadapter/audio/changeSoundOutput",
         ]
     );
+
+    drop(session);
+}
+
+
+#[test]
+fn transport_disconnect_during_audio_subscription_fails_configuration() {
+    let tv = FakeTv::start_disconnect_after_subscription(
+        PairingScenario::Paired,
+        "ssap://audio/getStatus",
+    );
+    let package = Package::new(adapter());
+    let mut pairing = package.host();
+    let (session, first) = pairing.pair_start(tv.settings(), None).unwrap();
+    assert!(matches!(first, PairStep::Waiting { .. }));
+    let paired = pairing.pair_continue(None).unwrap();
+    let PairStep::Done { credential, .. } = paired else {
+        panic!("pairing did not finish: {paired:?}");
+    };
+
+    let mut host = package.host();
+    assert!(host
+        .configure_with(tv.settings(), Some(&credential))
+        .is_err());
+    assert!(tv
+        .requests()
+        .iter()
+        .any(|request| request == "ssap://audio/getStatus"));
 
     drop(session);
 }
