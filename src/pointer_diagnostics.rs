@@ -5,16 +5,23 @@
 
 use std::{
     fs::OpenOptions,
-    io::{Seek, SeekFrom, Write},
+    io::Write,
     os::unix::fs::OpenOptionsExt,
+    sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 const LOG_PATH: &str = "/tmp/couch-webos-pointer.log";
 const MAX_LOG_BYTES: u64 = 64 * 1024;
 
+// Main-thread and pointer-worker diagnostics share this append-only log.
+static LOG_LOCK: Mutex<()> = Mutex::new(());
+
 /// Start a fresh log for this plugin process.
 pub(crate) fn reset() {
+    let Ok(_guard) = LOG_LOCK.lock() else {
+        return;
+    };
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .write(true)
@@ -28,10 +35,13 @@ pub(crate) fn reset() {
 
 /// Append one diagnostic line, truncating the file before it grows without bound.
 pub(crate) fn record(message: &str) {
+    let Ok(_guard) = LOG_LOCK.lock() else {
+        return;
+    };
     let Ok(mut file) = OpenOptions::new()
         .create(true)
+        .append(true)
         .read(true)
-        .write(true)
         .mode(0o600)
         .open(LOG_PATH)
     else {
@@ -46,9 +56,6 @@ pub(crate) fn record(message: &str) {
         if file.set_len(0).is_err() {
             return;
         }
-    }
-    if file.seek(SeekFrom::End(0)).is_err() {
-        return;
     }
     let _ = writeln!(file, "{} {}", timestamp(), message);
 }
