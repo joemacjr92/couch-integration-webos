@@ -493,7 +493,7 @@ fn every_pairing_scenario_passes_the_shared_admission_harness() {
     );
 }
 
-fn configure_paired_tv(tv: &FakeTv) -> (Package, couch_plugin::host::Host) {
+fn pair_tv(tv: &FakeTv) -> (Package, Value) {
     let package = Package::new(adapter());
     let mut pairing = package.host();
     let (_session, first) = pairing.pair_start(tv.settings(), None).unwrap();
@@ -502,10 +502,7 @@ fn configure_paired_tv(tv: &FakeTv) -> (Package, couch_plugin::host::Host) {
     let PairStep::Done { credential, .. } = paired else {
         panic!("pairing did not finish: {paired:?}");
     };
-    let mut host = package.host();
-    host.configure_with(tv.settings(), Some(&credential))
-        .unwrap();
-    (package, host)
+    (package, credential)
 }
 
 #[test]
@@ -517,7 +514,9 @@ fn rejected_audio_subscriptions_do_not_prevent_normal_tv_operation() {
             ..FakeTvOptions::default()
         },
     );
-    let (_package, mut host) = configure_paired_tv(&tv);
+    let (package, credential) = pair_tv(&tv);
+    let mut host = package.host();
+    host.configure_with(tv.settings(), Some(&credential)).unwrap();
     host.command("volume-up").unwrap();
     let status = host.status().unwrap();
 
@@ -551,7 +550,9 @@ fn stale_cec_child_is_not_launched_after_disappearing_from_tv_probe() {
             ..FakeTvOptions::default()
         },
     );
-    let (_package, mut host) = configure_paired_tv(&tv);
+    let (package, credential) = pair_tv(&tv);
+    let mut host = package.host();
+    host.configure_with(tv.settings(), Some(&credential)).unwrap();
     let inputs = host.inputs().unwrap();
     let child = inputs
         .iter()
@@ -585,7 +586,9 @@ fn cec_selection_is_rejected_when_tv_reports_a_different_device_after_launch() {
             ..FakeTvOptions::default()
         },
     );
-    let (_package, mut host) = configure_paired_tv(&tv);
+    let (package, credential) = pair_tv(&tv);
+    let mut host = package.host();
+    host.configure_with(tv.settings(), Some(&credential)).unwrap();
     let inputs = host.inputs().unwrap();
     let child = inputs
         .iter()
