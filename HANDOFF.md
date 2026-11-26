@@ -470,3 +470,146 @@ Before creating the clean branch or porting code, inspect the exact commits and 
 4. Check whether the user completed the longer idle soak test; do not assume it happened.
 5. If preparing an upstream worker PR, begin from upstream `main` and port only the WebSocket worker changes. Do not use the investigation branch as a direct PR head.
 6. Keep the long-press/CouchOS issue separate unless new evidence connects it to the webOS integration.
+
+
+---
+
+# LG webOS Device UI, Activity Pages, and Future Media Support — 2026-11-25
+
+This section records the investigation into why the LG webOS integration presents differently when opened as a Device versus when used as an Activity, the comparison with the legacy CoreELEC/Kodi path, and the feasibility of adding media metadata/artwork support. These findings were made by inspecting CouchOS core and integration source. Re-check the live source before implementation because core behavior and protocol support may change.
+
+## Device screen versus Activity screen
+
+### Observed behavior
+
+- Opening the LG webOS integration directly as a Device presents the native Couch television-style screen: a prominent TV/media area with artwork-oriented presentation and transport controls, rather than a collection of package command pages.
+- Selecting the same LG integration as an Activity source presents the package-defined Activity pages: navigation, playback/transport commands, input selection, and other declared controls.
+- This is not simply a setting that switches between two layouts. The Device and Activity entry points take different routes through CouchOS core.
+
+### CouchOS source-path findings
+
+The inspected core files were:
+- `ui/couch-gui/src/shortcuts.rs`
+- `ui/couch-gui/src/activity.rs`
+- `ui/couch-gui/src/activity_pages.rs`
+- `ui/couch-gui/ui/screens/tv.slint`
+
+The relevant behavior is:
+
+1. The Device shortcut path uses `opens_player(integration)` for built-in player integrations. That helper recognizes `Integration::Kodi` and `Integration::Sonos`; it does not classify `Integration::Plugin` as a built-in player.
+2. For a packaged television, the Device path can instead recognize the native TV connection/profile and open the Couch native TV screen.
+3. The Activity controller resolves a plugin-backed Activity source through `plugin_target(...)`. When it finds an `Integration::Plugin`, it opens the plugin Activity page renderer and returns before reaching the generic/custom Activity page path.
+4. The plugin page renderer builds pages from the package's declared presentation components. It does not consult the Device screen's native-TV profile to switch the Activity to the native TV screen.
+
+This explains the difference: the same packaged LG integration can qualify for the native TV Device screen while its Activity still uses the generic package presentation renderer.
+
+### Native packaged-TV behavior and core PR #338
+
+CouchOS core PR [#338 — Restore native packaged TV controls](https://github.com/Couch-OS/couch/pull/338) was merged on 2026-09-24 (merge commit `24f808afe0e04e9dd0b32a15e510ccf3222f3437`).
+
+The inspected change recognizes a packaged television from its existing input selector, `supports_inputs`, and complete standard TV capability set. It restores the native Couch TV hero and transport row without adding a vendor-specific manifest flag or changing the package protocol. It also routes the expected physical TV keys through the package. Incomplete TV/receiver capability sets continue to use the generic tile navigator.
+
+The important boundary is that this native packaged-TV recognition explains the Device presentation; the Activity plugin path described above does not currently reuse that native screen.
+
+The webOS package already declares `supports_inputs: true` and an `input_selector` presentation component. Its input implementation uses LG SSAP to retrieve the external input list and switch inputs.
+
+## Why the Activity has multiple pages
+
+The inspected `ui/couch-gui/src/activity_pages.rs` implementation maps each declared presentation component to its own page. This includes components such as:
+- `InputSelector`
+- `CommandGroup`
+- `StatusText`
+- `Toggle`
+- `VolumeDbControl`
+- `SoundOutputSelector`
+
+The input selector is not missing or unsupported. It is deliberately rendered as its own page by the current plugin Activity renderer. There is no current manifest layout option that combines the input selector with the Navigation or Playback command groups on one page.
+
+**Decision:** Keep the input selector in the manifest. Removing it merely to reduce page count would remove useful functionality and would not create a combined page. Combining components or arranging multiple components on one Activity page requires a CouchOS core renderer/protocol enhancement; it cannot be achieved by changing only the webOS integration manifest.
+
+## Comparison with legacy CoreELEC / Kodi
+
+The old CoreELEC/Kodi path differs materially from the packaged Kodi integration:
+
+- In `model/couch-model/src/connection.rs`, both legacy `Provider::Kodi` and `Provider::CoreElec` connections resolve to the built-in `Integration::Kodi`.
+- The Device shortcut logic recognizes `Integration::Kodi` as a built-in player and routes it to CouchOS's native Kodi player controller.
+- CoreELEC's SSH/system-management functionality is separate from the Kodi media-control/player path.
+- The newer packaged Kodi integration is a plugin. Its README describes it as a preview and explicitly says it does not replace the built-in Kodi integration or provide the full native player screen. Its package presentation is currently a generic set of command/control pages.
+
+The legacy CoreELEC experience therefore benefits from CouchOS's built-in Kodi player implementation; it is not evidence that a generic package Activity can currently render a native player screen. The packaged LG integration's native Device screen is a separate packaged-TV capability introduced by the core native-TV work, while its Activity remains package-page based.
+
+Reference: [CouchOS Kodi integration README](https://github.com/Couch-OS/couch-integration-kodi/blob/main/README.md).
+
+## Media player and artwork feasibility
+
+### CouchOS support: design/model exists, runtime path is not complete
+
+The following core files/plans were inspected:
+- `docs/plans/protocol-3-t4-media.md`
+- `docs/plans/media-player-component-design.md`
+- `clients/couch-plugin/src/manifest.rs`
+- `model/couch-model/src/connection.rs`
+- `ui/couch-gui/src/activity_pages.rs`
+
+There are media-player model/design types, including concepts for layout, artwork, lists, up-next content, navigation, refresh intervals, and keys. The approved T4 media plan describes a package-provided media component with Couch-rendered native player UI, metadata, artwork, seek/transport, lists, and selection operations.
+
+However, this is not currently a usable package feature in the inspected source:
+
+- The manifest validator explicitly rejects `PluginComponent::MediaPlayer` (and `VolumePercentControl`) pending the required protocol implementation.
+- The Activity page renderer explicitly ignores `MediaPlayer` components.
+- The design document is a proposal/design reference, not proof of a working end-to-end implementation.
+- The media plan is marked approved but describes work that still needs to land. Do not add a `media_player` component to the webOS manifest and assume CouchOS will consume it.
+
+The media plan describes artwork transfer constraints (including bounded size/time and supported image MIME types). The inspected GUI image decoder path appeared to support JPEG/PNG but not WebP; verify current decoder support before relying on the plan's broader MIME list.
+
+**Conclusion:** A CouchOS core implementation is a prerequisite for a real package-provided media player. The webOS integration alone cannot make artwork appear in the native Couch player.
+
+### LG webOS metadata/artwork API: promising, not yet proven on retail TVs
+
+The official webOS OSE Media Controller API documentation describes the Luna service `com.webos.service.mediacontroller`, including:
+- Media session discovery and session information.
+- Playback status and position.
+- Media metadata such as title, artist, album, and duration.
+- A `coverArt` value containing a source URL.
+
+Reference: [LG webOS OSE Media Controller API](https://www.webosose.org/docs/reference/ls2-api/com-webos-service-mediacontroller/).
+
+Important limitation: this is a Luna Service API documented for webOS Open Source Edition. It is not an SSAP endpoint already exposed through the integration's existing remote WebSocket connection. The investigation did not establish that the service is available to third-party apps, or remotely accessible, on retail LG webOS televisions. Do not assume the OSE API can be called over SSAP or that its cover-art URL is reachable from CouchOS.
+
+The current webOS integration does not retrieve media-session metadata or artwork. Its status path currently obtains power, volume, foreground app information, and optional sound/picture information over SSAP. The foreground app title is not equivalent to the active media session's title/artist/album/artwork.
+
+### Recommended proof-of-concept before implementation
+
+When core media-player support is available, first establish LG-side feasibility on the actual target TV:
+
+1. Determine whether the TV exposes a supported media-session API to a third-party app or remote client.
+2. Verify whether the relevant Luna service is available on the retail TV and what permissions/service-call context it requires.
+3. Determine whether the service can be accessed from the integration's existing SSAP connection. If not, identify a supported, secure local access path rather than assuming SSAP can proxy Luna calls.
+4. Test with multiple foreground apps and media types; establish when metadata and artwork are present, absent, delayed, or stale.
+5. Verify that the returned artwork URL is reachable from CouchOS, including any authentication, local-only URL, certificate, or lifetime constraints.
+6. Only then design the package-side metadata/artwork reporting and map it to the CouchOS media protocol that has actually landed.
+
+Do not hard-code assumptions about one streaming app's metadata behavior as a general webOS capability.
+
+## Agreed direction and sequencing
+
+The current direction is to avoid speculative changes and revisit this after the outstanding upstream contributions have had a chance to land.
+
+Recommended sequence:
+
+1. **Wait for the two upstream contribution tracks to resolve.** Check live upstream PR/branch state before relying on any PR number or claiming either has landed. The functional CEC/audio contribution is upstream PR #6. The pointer-worker work is a separate contribution and must remain separate; use the clean upstream-based branch/PR rather than the fork investigation branch.
+2. **Re-check CouchOS media-player implementation.** Confirm the manifest validator accepts the component, protocol requests are implemented, and the GUI actually renders and services it. The current source inspected here does not satisfy those conditions.
+3. **Run the LG media-session proof-of-concept.** Establish actual retail-TV API availability, metadata quality, and artwork URL accessibility before implementing integration support.
+4. **Implement package media reporting only against a landed, supported CouchOS contract.** Keep the webOS integration's current status/input/command behavior working.
+5. **Revisit Activity page composition separately.** Determine whether CouchOS has added a way to compose components on one page or whether a core change is still needed. Keep the input selector unless a better native input-selection path replaces it.
+
+Do not block the LG API proof-of-concept on Activity layout work; they are separate investigations. Media player/artwork is the larger potential enhancement, while combining Activity controls is a CouchOS UI/layout question.
+
+## Key cautions for future sessions
+
+- Do not repeat the earlier incorrect explanation that a setting such as “Open custom pages first” alone switches a packaged LG Activity between the generic pages and the native TV Device screen. The source paths are distinct.
+- Do not equate legacy CoreELEC/Kodi with the packaged Kodi plugin. Legacy CoreELEC resolves to built-in Kodi; the package is a plugin with a different UI path.
+- Do not remove the webOS input selector to work around page count.
+- Do not claim CouchOS package media-player support is implemented merely because model types and design documents exist.
+- Do not claim the OSE Luna Media Controller API is remotely accessible on retail LG TVs until verified on hardware.
+- Keep all proposed CouchOS renderer/protocol changes clearly identified as core work, not webOS integration-only changes.
